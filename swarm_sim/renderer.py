@@ -72,12 +72,14 @@ def _arrow(surface, color, start, end, width=1):
 # ── Sim renderer ──────────────────────────────────────────────────────────────
 class Renderer:
     def __init__(self, swarm):
-        self.swarm      = swarm
-        self.show_lines = False
-        self.debug_mode = False
-        self._font      = None
-        self._font_sm   = None
-        self._screen    = None
+        self.swarm          = swarm
+        self.show_lines     = False
+        self.debug_mode     = False
+        self._font          = None
+        self._font_sm       = None
+        self._screen        = None
+        self._grid_surf     = None   # cached A* blocked-cell surface
+        self._grid_surf_ver = -1     # pathfinder version it was built from
 
     def init(self, screen):
         self._screen  = screen
@@ -179,20 +181,41 @@ class Renderer:
         alive = [d for d in self.swarm.drones if d.alive]
         W, H  = config.WORLD_SIZE
 
-        # ── single alpha surface for all translucent rings & lines ──
-        alpha = pygame.Surface((W, H), pygame.SRCALPHA)
+        # ── A* grid (blocked cells) — cached surface ──
+        pf = self.swarm._pf
+        if self._grid_surf_ver != pf.version:
+            self._grid_surf     = pf.debug_surface()
+            self._grid_surf_ver = pf.version
+        if self._grid_surf:
+            self._screen.blit(self._grid_surf, (0, 0))
 
+        # ── single alpha surface for translucent rings & neighbor lines ──
+        alpha = pygame.Surface((W, H), pygame.SRCALPHA)
         for drone in alive:
             pos = drone.position.astype(int)
-            # neighbor lines
             for nbp in drone.last_neighbor_positions:
                 pygame.draw.line(alpha, DC_NEIGHBOR, pos, (int(nbp[0]), int(nbp[1])), 1)
-            # perception ring
             pygame.draw.circle(alpha, DC_PERC,     pos, config.PERCEPTION_RADIUS, 1)
-            # separation ring
             pygame.draw.circle(alpha, DC_SEP_RING, pos, config.SEPARATION_RADIUS, 1)
-
         self._screen.blit(alpha, (0, 0))
+
+        # ── relay planned path ──
+        path = self.swarm._relay_path
+        pidx = self.swarm._path_idx
+        if len(path) > 1:
+            pts = [p.astype(int) for p in path]
+            pygame.draw.lines(self._screen, (70, 180, 70), False, pts, 2)
+            for i, p in enumerate(pts):
+                col = (255, 255, 60) if i == pidx else (80, 200, 80)
+                pygame.draw.circle(self._screen, col, p, 4 if i == pidx else 3)
+        if self.swarm._path_target is not None:
+            pt = self.swarm._path_target.astype(int)
+            pygame.draw.line(self._screen, (220, 220, 50), (pt[0]-9,pt[1]-9),(pt[0]+9,pt[1]+9), 2)
+            pygame.draw.line(self._screen, (220, 220, 50), (pt[0]+9,pt[1]-9),(pt[0]-9,pt[1]+9), 2)
+
+        # ── drone follow target ──
+        ft = self.swarm._drone_follow_target()
+        pygame.draw.circle(self._screen, (150, 255, 150), ft.astype(int), 6, 2)
 
         # ── solid environment hitboxes ──
         if env:
@@ -236,15 +259,19 @@ class Renderer:
 
     def _draw_debug_legend(self):
         entries = [
-            (DC_VEL,   "Velocity"),
-            (DC_FSEP,  "Separation force"),
-            (DC_FALN,  "Alignment force"),
-            (DC_FCOH,  "Cohesion force"),
-            (DC_FREL,  "Relay force"),
-            (DC_FENV,  "Env repulsion"),
+            (DC_VEL,        "Velocity"),
+            (DC_FSEP,       "Separation force"),
+            (DC_FALN,       "Alignment force"),
+            (DC_FCOH,       "Cohesion force"),
+            (DC_FREL,       "Relay force"),
+            (DC_FENV,       "Env repulsion"),
             ((200,200,200), "Perception radius"),
             ((255,220, 40), "Separation radius"),
-            ((55, 75,160),  "Neighbor link"),
+            ((55,  75,160), "Neighbor link"),
+            ((70, 180, 70), "Relay A* path"),
+            ((255,255, 60), "Path next node"),
+            ((150,255,150), "Drone follow target"),
+            ((200, 50, 50), "Blocked grid cell"),
         ]
         x0 = config.WORLD_SIZE[0] - 200
         y0 = 8
