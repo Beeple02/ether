@@ -47,6 +47,10 @@ def handle_events(swarm, renderer, ed_renderer, editor, state):
             swarm.kill_random()
         elif key == pygame.K_e:
             state["editor_mode"] = True
+        elif key == pygame.K_F11:
+            pygame.display.toggle_fullscreen()
+        elif key == pygame.K_TAB:
+            renderer.debug_mode = not renderer.debug_mode
         elif key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4):
             wkeys = ["separation", "alignment", "cohesion", "relay"]
             wk    = wkeys[key - pygame.K_1]
@@ -58,7 +62,9 @@ def handle_events(swarm, renderer, ed_renderer, editor, state):
 
 def main():
     pygame.init()
-    screen = pygame.display.set_mode(config.WORLD_SIZE)
+    # SCALED flag: game always renders at WORLD_SIZE, pygame handles
+    # stretching to actual window / fullscreen — mouse coords stay in world space
+    screen = pygame.display.set_mode(config.WORLD_SIZE, pygame.SCALED | pygame.RESIZABLE)
     pygame.display.set_caption("Drone Swarm Simulation")
     clock = pygame.time.Clock()
 

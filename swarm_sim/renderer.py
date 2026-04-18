@@ -3,35 +3,70 @@ import numpy as np
 from . import config
 from .environment import ZONE_COLORS
 
-# ── palette ──────────────────────────────────────────────────────────────────
-C_BG            = (14,  15,  24)
-C_DRONE         = (205, 215, 230)
-C_RELAY_RING    = (160, 120,  10)
-C_RELAY         = (255, 220,  40)
-C_LINE          = ( 38,  48,  72)
-C_WALL          = (190, 150,  65)
-C_WP            = ( 75, 185, 255)
-C_HUD_BG        = ( 18,  20,  34, 210)
-C_HUD_BORDER    = ( 50,  62,  98)
-C_HUD_LABEL     = ( 95, 125, 165)
-C_HUD_VAL       = (155, 215, 175)
-C_TREE_OUTER    = ( 28,  85,  38)
-C_TREE_MID      = ( 42, 125,  52)
-C_TREE_HI       = ( 68, 155,  70)
-C_TREE_TRUNK    = ( 75,  48,  18)
-C_BLD_FILL      = ( 48,  50,  64)
-C_BLD_BORDER    = ( 78,  82, 106)
-C_BLD_WIN       = ( 88, 118, 162, 160)
-C_SIDEBAR_BG    = ( 16,  18,  28, 230)
-C_SIDEBAR_BDR   = ( 44,  54,  88)
-C_BTN           = ( 30,  34,  52)
-C_BTN_ACTIVE    = ( 55,  80, 140)
-C_BTN_TEXT      = (185, 200, 220)
-C_BTN_KEY       = (110, 160, 220)
-C_SECTION       = ( 70,  82, 120)
-C_COUNT_TEXT    = (120, 145, 175)
+# ── palette ───────────────────────────────────────────────────────────────────
+C_BG          = (14,  15,  24)
+C_DRONE       = (205, 215, 230)
+C_RELAY_RING  = (160, 120,  10)
+C_RELAY       = (255, 220,  40)
+C_LINE        = ( 38,  48,  72)
+C_WALL        = (190, 150,  65)
+C_WP          = ( 75, 185, 255)
+C_HUD_BG      = ( 18,  20,  34, 210)
+C_HUD_BDR     = ( 50,  62,  98)
+C_HUD_LABEL   = ( 95, 125, 165)
+C_HUD_VAL     = (155, 215, 175)
+C_TREE_OUT    = ( 28,  85,  38)
+C_TREE_MID    = ( 42, 125,  52)
+C_TREE_HI     = ( 68, 155,  70)
+C_TREE_TRUNK  = ( 75,  48,  18)
+C_BLD_FILL    = ( 48,  50,  64)
+C_BLD_BDR     = ( 78,  82, 106)
+C_BLD_WIN     = ( 88, 118, 162, 160)
+C_SB_BG       = ( 16,  18,  28, 230)
+C_SB_BDR      = ( 44,  54,  88)
+C_BTN         = ( 30,  34,  52)
+C_BTN_ACT     = ( 55,  80, 140)
+C_BTN_TEXT    = (185, 200, 220)
+C_BTN_KEY     = (110, 160, 220)
+C_SECTION     = ( 70,  82, 120)
+C_COUNT       = (120, 145, 175)
 
-SIDEBAR_W = config.EDITOR_SIDEBAR_W
+# debug colors
+DC_NEIGHBOR   = ( 55,  75, 160,  70)
+DC_PERC       = (255, 255, 255,  20)
+DC_SEP_RING   = (255, 220,  40,  35)
+DC_VEL        = ( 80, 230,  80)
+DC_FSEP       = (255,  55,  55)
+DC_FALN       = ( 55, 100, 255)
+DC_FCOH       = ( 55, 215, 175)
+DC_FREL       = (255, 200,  40)
+DC_FENV       = (255, 130,  40)
+DC_WALL_HIT   = (255, 165,  50)
+DC_TREE_HIT   = ( 50, 255, 100)
+DC_BLD_HIT    = (255,  75,  50)
+DC_ZONE_T     = ( 50, 255, 120)
+DC_ZONE_N     = (255,  50,  50)
+
+FORCE_SCALE   = 55   # pixels per unit of force
+SIDEBAR_W     = config.EDITOR_SIDEBAR_W
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+def _arrow(surface, color, start, end, width=1):
+    sx, sy = int(start[0]), int(start[1])
+    ex, ey = int(end[0]), int(end[1])
+    dx, dy = ex - sx, ey - sy
+    length = (dx * dx + dy * dy) ** 0.5
+    if length < 2:
+        return
+    pygame.draw.line(surface, color, (sx, sy), (ex, ey), width)
+    if length > 6:
+        ux, uy = dx / length, dy / length
+        sz = min(7, length * 0.35)
+        l1 = (ex - ux * sz - uy * sz * 0.5, ey - uy * sz + ux * sz * 0.5)
+        l2 = (ex - ux * sz + uy * sz * 0.5, ey - uy * sz - ux * sz * 0.5)
+        pygame.draw.polygon(surface, color,
+                            [(ex, ey), (int(l1[0]), int(l1[1])), (int(l2[0]), int(l2[1]))])
 
 
 # ── Sim renderer ──────────────────────────────────────────────────────────────
@@ -39,79 +74,90 @@ class Renderer:
     def __init__(self, swarm):
         self.swarm      = swarm
         self.show_lines = False
+        self.debug_mode = False
         self._font      = None
+        self._font_sm   = None
         self._screen    = None
 
     def init(self, screen):
-        self._screen = screen
-        self._font   = pygame.font.SysFont("monospace", 14)
+        self._screen  = screen
+        self._font    = pygame.font.SysFont("monospace", 14)
+        self._font_sm = pygame.font.SysFont("monospace", 12)
 
     def draw(self, fps, paused):
         s = self._screen
         s.fill(C_BG)
-
         env = self.swarm._environment
         if env:
             self._draw_env(env)
-
-        if self.show_lines:
-            self._draw_lines()
-
+        if self.debug_mode:
+            self._draw_debug(env)
+        elif self.show_lines:
+            self._draw_relay_lines()
         self._draw_drones()
         self._draw_relay()
         self._draw_hud(fps, paused)
+        if self.debug_mode:
+            self._draw_debug_legend()
 
-    # ── environment ──────────────────────────────────────────────────────────
+    # ── world objects ─────────────────────────────────────────────────────────
     def _draw_env(self, env):
-        for z  in env.zones:     self._draw_zone(z)
-        for b  in env.buildings: self._draw_building(b)
-        for t  in env.trees:     self._draw_tree(t)
-        for w  in env.walls:     self._draw_wall(w)
+        for z in env.zones:     self._zone(z)
+        for b in env.buildings: self._building(b)
+        for t in env.trees:     self._tree(t)
+        for w in env.walls:     self._wall(w)
         for i, wp in enumerate(env.waypoints):
-            self._draw_waypoint(wp, i + 1)
+            self._waypoint(wp, i + 1)
 
-    def _draw_zone(self, zone):
+    def _zone(self, zone):
         x, y, w, h = (int(v) for v in zone.rect)
         col  = ZONE_COLORS.get(zone.zone_type, (128, 128, 128, 55))
         surf = pygame.Surface((max(w, 1), max(h, 1)), pygame.SRCALPHA)
         surf.fill(col)
         self._screen.blit(surf, (x, y))
-        border = (min(col[0] + 50, 255), min(col[1] + 50, 255), min(col[2] + 50, 255))
+        border = (min(col[0]+50,255), min(col[1]+50,255), min(col[2]+50,255))
         pygame.draw.rect(self._screen, border, (x, y, w, h), 1)
 
-    def _draw_building(self, bld):
+    def _building(self, bld):
         x, y, w, h = (int(v) for v in bld.rect)
         pygame.draw.rect(self._screen, C_BLD_FILL, (x, y, w, h))
-        pygame.draw.rect(self._screen, C_BLD_BORDER, (x, y, w, h), 2)
-        # windows
-        wsurf = pygame.Surface((max(w, 1), max(h, 1)), pygame.SRCALPHA)
-        ww, wh, gx, gy = 6, 5, 9, 9
-        for wx in range(gx, w - ww, ww + gx):
-            for wy in range(gy, h - wh, wh + gy):
-                pygame.draw.rect(wsurf, C_BLD_WIN, (wx, wy, ww, wh))
-        self._screen.blit(wsurf, (x, y))
+        pygame.draw.rect(self._screen, C_BLD_BDR,  (x, y, w, h), 2)
+        if w > 28 and h > 28:
+            cols = min(8, max(1, w // 28))
+            rows = min(6, max(1, h // 28))
+            gx   = max(5, (w - cols * 8) // (cols + 1))
+            gy   = max(5, (h - rows * 7) // (rows + 1))
+            ww   = max(6, (w - (cols + 1) * gx) // cols)
+            wh   = max(5, (h - (rows + 1) * gy) // rows)
+            ws   = pygame.Surface((max(w,1), max(h,1)), pygame.SRCALPHA)
+            for c in range(cols):
+                for r in range(rows):
+                    wx, wy = gx + c * (ww + gx), gy + r * (wh + gy)
+                    if wx + ww < w and wy + wh < h:
+                        pygame.draw.rect(ws, C_BLD_WIN, (wx, wy, ww, wh))
+            self._screen.blit(ws, (x, y))
 
-    def _draw_tree(self, tree):
+    def _tree(self, tree):
         pos = tree.position.astype(int)
         r   = int(tree.radius)
-        pygame.draw.circle(self._screen, C_TREE_OUTER, pos, r)
+        pygame.draw.circle(self._screen, C_TREE_OUT,   pos, r)
         pygame.draw.circle(self._screen, C_TREE_MID,   pos, max(r - 4, 2))
         hi = (pos[0] - r // 3, pos[1] - r // 3)
-        pygame.draw.circle(self._screen, C_TREE_HI, hi, max(r // 3, 2))
+        pygame.draw.circle(self._screen, C_TREE_HI,    hi,  max(r // 3, 2))
         pygame.draw.circle(self._screen, C_TREE_TRUNK, pos, 3)
 
-    def _draw_wall(self, wall):
+    def _wall(self, wall):
         pygame.draw.line(self._screen, C_WALL,
                          wall.start.astype(int), wall.end.astype(int), 3)
 
-    def _draw_waypoint(self, wp, idx):
+    def _waypoint(self, wp, idx):
         px, py = int(wp[0]), int(wp[1])
         pygame.draw.circle(self._screen, C_WP, (px, py), 7, 2)
         txt = self._font.render(str(idx), True, C_WP)
         self._screen.blit(txt, (px + 9, py - 9))
 
-    # ── agents ───────────────────────────────────────────────────────────────
-    def _draw_lines(self):
+    # ── agents ────────────────────────────────────────────────────────────────
+    def _draw_relay_lines(self):
         rp = self.swarm.relay.position
         for d in self.swarm.drones:
             if d.alive and np.linalg.norm(d.position - rp) < config.PERCEPTION_RADIUS:
@@ -128,11 +174,98 @@ class Renderer:
         pygame.draw.circle(self._screen, C_RELAY_RING, rp, 12)
         pygame.draw.circle(self._screen, C_RELAY,      rp, 10)
 
+    # ── debug overlay ─────────────────────────────────────────────────────────
+    def _draw_debug(self, env):
+        alive = [d for d in self.swarm.drones if d.alive]
+        W, H  = config.WORLD_SIZE
+
+        # ── single alpha surface for all translucent rings & lines ──
+        alpha = pygame.Surface((W, H), pygame.SRCALPHA)
+
+        for drone in alive:
+            pos = drone.position.astype(int)
+            # neighbor lines
+            for nbp in drone.last_neighbor_positions:
+                pygame.draw.line(alpha, DC_NEIGHBOR, pos, (int(nbp[0]), int(nbp[1])), 1)
+            # perception ring
+            pygame.draw.circle(alpha, DC_PERC,     pos, config.PERCEPTION_RADIUS, 1)
+            # separation ring
+            pygame.draw.circle(alpha, DC_SEP_RING, pos, config.SEPARATION_RADIUS, 1)
+
+        self._screen.blit(alpha, (0, 0))
+
+        # ── solid environment hitboxes ──
+        if env:
+            for wall in env.walls:
+                pygame.draw.line(self._screen, DC_WALL_HIT,
+                                 wall.start.astype(int), wall.end.astype(int), 3)
+            for tree in env.trees:
+                p = tree.position.astype(int)
+                pygame.draw.circle(self._screen, DC_TREE_HIT, p, int(tree.radius), 2)
+                eff = int(tree.radius + config.PERCEPTION_RADIUS * 0.3)
+                pygame.draw.circle(self._screen, (50, 180, 80), p, eff, 1)
+            for bld in env.buildings:
+                x, y, w, h = (int(v) for v in bld.rect)
+                pygame.draw.rect(self._screen, DC_BLD_HIT, (x, y, w, h), 2)
+            for zone in env.zones:
+                x, y, w, h = (int(v) for v in zone.rect)
+                col = DC_ZONE_T if zone.zone_type == "TARGET" else DC_ZONE_N
+                pygame.draw.rect(self._screen, col, (x, y, w, h), 2)
+
+        # ── per-drone arrows ──
+        for drone in alive:
+            pos = drone.position.astype(int)
+            # velocity
+            ve = (pos[0] + int(drone.velocity[0] * 9),
+                  pos[1] + int(drone.velocity[1] * 9))
+            _arrow(self._screen, DC_VEL, pos, ve, 2)
+            # force components
+            for key, col in (("sep", DC_FSEP), ("aln", DC_FALN),
+                             ("coh", DC_FCOH), ("rel", DC_FREL), ("env", DC_FENV)):
+                f = drone.last_forces.get(key, np.zeros(2))
+                if np.linalg.norm(f) > 0.004:
+                    fe = (pos[0] + int(f[0] * FORCE_SCALE),
+                          pos[1] + int(f[1] * FORCE_SCALE))
+                    _arrow(self._screen, col, pos, fe, 1)
+
+        # relay velocity
+        rp  = self.swarm.relay.position.astype(int)
+        rv  = self.swarm.relay.velocity
+        rve = (rp[0] + int(rv[0] * 12), rp[1] + int(rv[1] * 12))
+        _arrow(self._screen, (255, 255, 80), rp, rve, 2)
+
+    def _draw_debug_legend(self):
+        entries = [
+            (DC_VEL,   "Velocity"),
+            (DC_FSEP,  "Separation force"),
+            (DC_FALN,  "Alignment force"),
+            (DC_FCOH,  "Cohesion force"),
+            (DC_FREL,  "Relay force"),
+            (DC_FENV,  "Env repulsion"),
+            ((200,200,200), "Perception radius"),
+            ((255,220, 40), "Separation radius"),
+            ((55, 75,160),  "Neighbor link"),
+        ]
+        x0 = config.WORLD_SIZE[0] - 200
+        y0 = 8
+        pw, ph = 192, len(entries) * 17 + 22
+        panel = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        panel.fill(C_HUD_BG)
+        self._screen.blit(panel, (x0 - 6, y0))
+        pygame.draw.rect(self._screen, C_HUD_BDR, (x0 - 6, y0, pw, ph), 1)
+        hdr = self._font_sm.render("[TAB] Debug ON", True, (130, 165, 215))
+        self._screen.blit(hdr, (x0, y0 + 3))
+        y = y0 + 20
+        for col, label in entries:
+            pygame.draw.line(self._screen, col[:3], (x0, y+6), (x0+18, y+6), 2)
+            self._screen.blit(self._font_sm.render(label, True, C_HUD_LABEL), (x0+22, y))
+            y += 17
+
     # ── HUD ──────────────────────────────────────────────────────────────────
     def _draw_hud(self, fps, paused):
-        w   = config.WEIGHTS
+        w    = config.WEIGHTS
         rows = [
-            ("FPS",  f"{fps:.0f}" + ("  ■ PAUSED" if paused else "")),
+            ("FPS",    f"{fps:.0f}" + ("  ■ PAUSED" if paused else "")),
             ("DRONES", f"{self.swarm.alive_count} / {config.NUM_DRONES}"),
             ("SPEED",  f"{config.MAX_SPEED:.1f}"),
             ("SEP",    f"{w['separation']:.1f}"),
@@ -140,26 +273,20 @@ class Renderer:
             ("COH",    f"{w['cohesion']:.1f}"),
             ("REL",    f"{w['relay']:.1f}"),
         ]
-
         lh, pad, pw = 18, 9, 168
-        ph = pad * 2 + len(rows) * lh
-
-        panel = pygame.Surface((pw, ph), pygame.SRCALPHA)
-        panel.fill(C_HUD_BG)
-        self._screen.blit(panel, (6, 6))
-        pygame.draw.rect(self._screen, C_HUD_BORDER, (6, 6, pw, ph), 1)
-
+        ph  = pad * 2 + len(rows) * lh
+        pnl = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        pnl.fill(C_HUD_BG)
+        self._screen.blit(pnl, (6, 6))
+        pygame.draw.rect(self._screen, C_HUD_BDR, (6, 6, pw, ph), 1)
         for i, (label, val) in enumerate(rows):
-            y  = 6 + pad + i * lh
-            ls = self._font.render(label, True, C_HUD_LABEL)
-            vs = self._font.render(val,   True, C_HUD_VAL)
-            self._screen.blit(ls, (14, y))
-            self._screen.blit(vs, (82, y))
-
-        # keybind reminder – bottom-left
-        hints = "[SPC]Pause [R]Reset [E]Editor [L]Lines [K]Kill [↑↓]Drones [+−]Speed [1-4/S1-4]Weights"
-        hs = pygame.font.SysFont("monospace", 11).render(hints, True, (60, 75, 105))
-        self._screen.blit(hs, (6, config.WORLD_SIZE[1] - 16))
+            y = 6 + pad + i * lh
+            self._screen.blit(self._font.render(label, True, C_HUD_LABEL), (14, y))
+            self._screen.blit(self._font.render(val,   True, C_HUD_VAL),   (82, y))
+        hints = ("[SPC]Pause [R]Reset [E]Editor [L]Lines [K]Kill "
+                 "[↑↓]Drones [+−]Speed [1-4/S+1-4]Weights [TAB]Debug [F11]Fullscreen")
+        hs = pygame.font.SysFont("monospace", 11).render(hints, True, (52, 65, 95))
+        self._screen.blit(hs, (6, config.WORLD_SIZE[1] - 15))
 
 
 # ── Editor renderer ───────────────────────────────────────────────────────────
@@ -179,79 +306,77 @@ class EditorRenderer:
         self._font_sm = pygame.font.SysFont("monospace", 12)
 
     def draw(self):
-        s = self._screen
-        s.fill(C_BG)
-
+        self._screen.fill(C_BG)
         if self.show_grid:
             self._draw_grid()
-
         env = self.editor.environment
-        # world objects (behind sidebar visually but same coords)
-        for z  in env.zones:     self._draw_zone(z)
-        for b  in env.buildings: self._draw_building(b)
-        for t  in env.trees:     self._draw_tree(t)
-        for w  in env.walls:     self._draw_wall(w)
+        for z in env.zones:     self._zone(z)
+        for b in env.buildings: self._building(b)
+        for t in env.trees:     self._tree(t)
+        for w in env.walls:     self._wall(w)
         for i, wp in enumerate(env.waypoints):
-            self._draw_waypoint(wp, i + 1)
+            self._waypoint(wp, i + 1)
+        self._drag_preview()
+        self._sidebar()
 
-        self._draw_drag_preview()
-        self._draw_sidebar()
-
-    # ── world objects (same helpers as sim renderer) ──────────────────────────
     def _draw_grid(self):
         w, h = config.WORLD_SIZE
         for x in range(0, w, self.GRID):
-            pygame.draw.line(self._screen, (22, 24, 38), (x, 0), (x, h))
+            pygame.draw.line(self._screen, (20, 22, 36), (x, 0), (x, h))
         for y in range(0, h, self.GRID):
-            pygame.draw.line(self._screen, (22, 24, 38), (0, y), (w, y))
+            pygame.draw.line(self._screen, (20, 22, 36), (0, y), (w, y))
 
-    def _draw_zone(self, zone):
+    def _zone(self, zone):
         x, y, w, h = (int(v) for v in zone.rect)
-        col  = ZONE_COLORS.get(zone.zone_type, (128, 128, 128, 55))
-        surf = pygame.Surface((max(w, 1), max(h, 1)), pygame.SRCALPHA)
+        col  = ZONE_COLORS.get(zone.zone_type, (128,128,128,55))
+        surf = pygame.Surface((max(w,1), max(h,1)), pygame.SRCALPHA)
         surf.fill(col)
         self._screen.blit(surf, (x, y))
-        border = (min(col[0] + 60, 255), min(col[1] + 60, 255), min(col[2] + 60, 255))
+        border = (min(col[0]+60,255), min(col[1]+60,255), min(col[2]+60,255))
         pygame.draw.rect(self._screen, border, (x, y, w, h), 1)
-        lbl = self._font_sm.render(zone.zone_type, True, border)
-        self._screen.blit(lbl, (x + 4, y + 4))
+        self._screen.blit(self._font_sm.render(zone.zone_type, True, border), (x+4, y+4))
 
-    def _draw_building(self, bld):
+    def _building(self, bld):
         x, y, w, h = (int(v) for v in bld.rect)
-        pygame.draw.rect(self._screen, C_BLD_FILL,   (x, y, w, h))
-        pygame.draw.rect(self._screen, C_BLD_BORDER, (x, y, w, h), 2)
-        wsurf = pygame.Surface((max(w, 1), max(h, 1)), pygame.SRCALPHA)
-        ww, wh, gx, gy = 6, 5, 9, 9
-        for wx in range(gx, w - ww, ww + gx):
-            for wy in range(gy, h - wh, wh + gy):
-                pygame.draw.rect(wsurf, C_BLD_WIN, (wx, wy, ww, wh))
-        self._screen.blit(wsurf, (x, y))
-        lbl = self._font_sm.render("BLD", True, C_BLD_BORDER)
-        self._screen.blit(lbl, (x + 4, y + 4))
+        pygame.draw.rect(self._screen, C_BLD_FILL, (x, y, w, h))
+        pygame.draw.rect(self._screen, C_BLD_BDR,  (x, y, w, h), 2)
+        if w > 28 and h > 28:
+            cols = min(8, max(1, w // 28))
+            rows = min(6, max(1, h // 28))
+            gx   = max(5, (w - cols * 8) // (cols + 1))
+            gy   = max(5, (h - rows * 7) // (rows + 1))
+            ww   = max(6, (w - (cols + 1) * gx) // cols)
+            wh   = max(5, (h - (rows + 1) * gy) // rows)
+            ws   = pygame.Surface((max(w,1), max(h,1)), pygame.SRCALPHA)
+            for c in range(cols):
+                for r in range(rows):
+                    wx, wy = gx + c*(ww+gx), gy + r*(wh+gy)
+                    if wx+ww < w and wy+wh < h:
+                        pygame.draw.rect(ws, C_BLD_WIN, (wx, wy, ww, wh))
+            self._screen.blit(ws, (x, y))
+        self._screen.blit(self._font_sm.render("BLD", True, C_BLD_BDR), (x+4, y+4))
 
-    def _draw_tree(self, tree):
+    def _tree(self, tree):
         pos = tree.position.astype(int)
         r   = int(tree.radius)
-        pygame.draw.circle(self._screen, C_TREE_OUTER, pos, r)
-        pygame.draw.circle(self._screen, C_TREE_MID,   pos, max(r - 4, 2))
-        hi = (pos[0] - r // 3, pos[1] - r // 3)
-        pygame.draw.circle(self._screen, C_TREE_HI, hi, max(r // 3, 2))
+        pygame.draw.circle(self._screen, C_TREE_OUT,   pos, r)
+        pygame.draw.circle(self._screen, C_TREE_MID,   pos, max(r-4, 2))
+        hi = (pos[0]-r//3, pos[1]-r//3)
+        pygame.draw.circle(self._screen, C_TREE_HI,    hi,  max(r//3, 2))
         pygame.draw.circle(self._screen, C_TREE_TRUNK, pos, 3)
 
-    def _draw_wall(self, wall):
+    def _wall(self, wall):
         pygame.draw.line(self._screen, C_WALL,
                          wall.start.astype(int), wall.end.astype(int), 3)
-        # endpoint handles
         for ep in (wall.start, wall.end):
             pygame.draw.circle(self._screen, C_WALL, ep.astype(int), 5, 2)
 
-    def _draw_waypoint(self, wp, idx):
+    def _waypoint(self, wp, idx):
         px, py = int(wp[0]), int(wp[1])
         pygame.draw.circle(self._screen, C_WP, (px, py), 8, 2)
-        txt = self._font.render(str(idx), True, C_WP)
-        self._screen.blit(txt, (px + 10, py - 10))
+        self._screen.blit(self._font.render(str(idx), True, C_WP), (px+10, py-10))
 
-    def _draw_drag_preview(self):
+    def _drag_preview(self):
         ed = self.editor
         if not ed.drag_start or ed.current_tool not in ("W", "B", "Z"):
             return
@@ -260,105 +385,82 @@ class EditorRenderer:
         if ed.current_tool == "W":
             pygame.draw.line(self._screen, (255, 200, 80), (sx, sy), (mx, my), 2)
         elif ed.current_tool == "B":
-            x, y = min(sx, mx), min(sy, my)
-            w, h = abs(mx - sx), abs(my - sy)
+            x, y = min(sx,mx), min(sy,my)
+            w, h = abs(mx-sx), abs(my-sy)
             if w > 1 and h > 1:
-                pygame.draw.rect(self._screen, C_BLD_FILL,   (x, y, w, h))
-                pygame.draw.rect(self._screen, C_BLD_BORDER, (x, y, w, h), 2)
+                pygame.draw.rect(self._screen, C_BLD_FILL, (x,y,w,h))
+                pygame.draw.rect(self._screen, C_BLD_BDR,  (x,y,w,h), 2)
         elif ed.current_tool == "Z":
-            x, y = min(sx, mx), min(sy, my)
-            w, h = abs(mx - sx), abs(my - sy)
+            x, y = min(sx,mx), min(sy,my)
+            w, h = abs(mx-sx), abs(my-sy)
             if w > 1 and h > 1:
-                col  = ZONE_COLORS.get(ed.zone_type, (128, 128, 128, 55))
-                surf = pygame.Surface((w, h), pygame.SRCALPHA)
+                col  = ZONE_COLORS.get(ed.zone_type, (128,128,128,55))
+                surf = pygame.Surface((w,h), pygame.SRCALPHA)
                 surf.fill(col)
-                self._screen.blit(surf, (x, y))
+                self._screen.blit(surf, (x,y))
 
-    # ── sidebar ───────────────────────────────────────────────────────────────
-    def _draw_sidebar(self):
-        h  = config.WORLD_SIZE[1]
-        sw = SIDEBAR_W
-
-        panel = pygame.Surface((sw, h), pygame.SRCALPHA)
-        panel.fill(C_SIDEBAR_BG)
-        self._screen.blit(panel, (0, 0))
-        pygame.draw.line(self._screen, C_SIDEBAR_BDR, (sw, 0), (sw, h), 1)
+    def _sidebar(self):
+        sw, H = SIDEBAR_W, config.WORLD_SIZE[1]
+        pnl   = pygame.Surface((sw, H), pygame.SRCALPHA)
+        pnl.fill(C_SB_BG)
+        self._screen.blit(pnl, (0, 0))
+        pygame.draw.line(self._screen, C_SB_BDR, (sw, 0), (sw, H), 1)
 
         ed  = self.editor
         env = ed.environment
         y   = 10
 
-        # title
         title = self._font.render("EDITOR", True, (140, 170, 220))
-        self._screen.blit(title, (sw // 2 - title.get_width() // 2, y))
-        y += 22
-        pygame.draw.line(self._screen, C_SECTION, (6, y), (sw - 6, y)); y += 8
+        self._screen.blit(title, (sw//2 - title.get_width()//2, y)); y += 22
+        pygame.draw.line(self._screen, C_SECTION, (6, y), (sw-6, y)); y += 8
 
-        # tool buttons
-        self._section_label("TOOLS", y); y += 16
+        self._slabel("TOOLS", y); y += 16
         for key, label in ed.TOOLS:
             active = ed.current_tool == key
-            bg     = C_BTN_ACTIVE if active else C_BTN
-            rect   = pygame.Rect(6, y, sw - 12, 26)
-            pygame.draw.rect(self._screen, bg, rect, border_radius=4)
+            rect   = pygame.Rect(6, y, sw-12, 26)
+            pygame.draw.rect(self._screen, C_BTN_ACT if active else C_BTN, rect, border_radius=4)
             if active:
                 pygame.draw.rect(self._screen, C_BTN_KEY, rect, 1, border_radius=4)
-            ks = self._font_sm.render(f"[{key}]", True, C_BTN_KEY)
-            ls = self._font_sm.render(label,      True, C_BTN_TEXT)
-            self._screen.blit(ks, (10,  y + 6))
-            self._screen.blit(ls, (34,  y + 6))
+            self._screen.blit(self._font_sm.render(f"[{key}]", True, C_BTN_KEY),  (10, y+6))
+            self._screen.blit(self._font_sm.render(label,      True, C_BTN_TEXT), (36, y+6))
             y += 30
 
         y += 4
-        pygame.draw.line(self._screen, C_SECTION, (6, y), (sw - 6, y)); y += 8
+        pygame.draw.line(self._screen, C_SECTION, (6, y), (sw-6, y)); y += 8
 
-        # zone type selector (only when Z active)
         if ed.current_tool == "Z":
-            self._section_label("ZONE TYPE", y); y += 16
             from .environment import ZONE_TYPES
+            self._slabel("ZONE TYPE", y); y += 16
             for zt in ZONE_TYPES:
-                active = ed.zone_type == zt
-                bg     = C_BTN_ACTIVE if active else C_BTN
-                col    = ZONE_COLORS.get(zt, (128, 128, 128, 55))
-                rect   = pygame.Rect(6, y, sw - 12, 22)
-                pygame.draw.rect(self._screen, bg,   rect, border_radius=3)
-                dot_col = col[:3]
-                pygame.draw.circle(self._screen, dot_col, (16, y + 11), 6)
-                ztxt = self._font_sm.render(zt, True, C_BTN_TEXT)
-                self._screen.blit(ztxt, (26, y + 5))
+                rect = pygame.Rect(6, y, sw-12, 22)
+                pygame.draw.rect(self._screen,
+                                 C_BTN_ACT if ed.zone_type == zt else C_BTN,
+                                 rect, border_radius=3)
+                col = ZONE_COLORS.get(zt, (128,128,128,55))
+                pygame.draw.circle(self._screen, col[:3], (16, y+11), 6)
+                self._screen.blit(self._font_sm.render(zt, True, C_BTN_TEXT), (26, y+5))
                 y += 26
             y += 4
-            pygame.draw.line(self._screen, C_SECTION, (6, y), (sw - 6, y)); y += 8
+            pygame.draw.line(self._screen, C_SECTION, (6, y), (sw-6, y)); y += 8
 
-        # object counts
-        self._section_label("OBJECTS", y); y += 16
-        counts = [
-            ("Walls",     len(env.walls)),
-            ("Trees",     len(env.trees)),
-            ("Buildings", len(env.buildings)),
-            ("Zones",     len(env.zones)),
-            ("Waypoints", len(env.waypoints)),
-        ]
-        for name, cnt in counts:
-            ns = self._font_sm.render(name, True, C_COUNT_TEXT)
+        self._slabel("OBJECTS", y); y += 16
+        for name, cnt in [("Walls", len(env.walls)), ("Trees", len(env.trees)),
+                          ("Buildings", len(env.buildings)), ("Zones", len(env.zones)),
+                          ("Waypoints", len(env.waypoints))]:
+            ns = self._font_sm.render(name,    True, C_COUNT)
             cs = self._font_sm.render(str(cnt), True, C_HUD_VAL)
-            self._screen.blit(ns, (10,  y))
+            self._screen.blit(ns, (10, y))
             self._screen.blit(cs, (sw - 10 - cs.get_width(), y))
             y += 17
 
         y += 6
-        pygame.draw.line(self._screen, C_SECTION, (6, y), (sw - 6, y)); y += 8
-
-        # actions
-        self._section_label("ACTIONS", y); y += 16
-        actions = [("[G]", "Grid"), ("^S", "Save"), ("^O", "Load"), ("[E]", "Exit")]
-        for key, lbl in actions:
-            ks = self._font_sm.render(key, True, C_BTN_KEY)
-            ls = self._font_sm.render(lbl, True, C_COUNT_TEXT)
-            self._screen.blit(ks, (10,  y))
-            self._screen.blit(ls, (42,  y))
+        pygame.draw.line(self._screen, C_SECTION, (6, y), (sw-6, y)); y += 8
+        self._slabel("ACTIONS", y); y += 16
+        for key, lbl in [("[G]","Grid"), ("^S","Save"), ("^O","Load"), ("[E]","Exit")]:
+            self._screen.blit(self._font_sm.render(key, True, C_BTN_KEY),  (10, y))
+            self._screen.blit(self._font_sm.render(lbl, True, C_COUNT),    (42, y))
             y += 16
 
-    def _section_label(self, text, y):
+    def _slabel(self, text, y):
         s = pygame.font.SysFont("monospace", 11).render(text, True, C_SECTION)
-        self._screen.blit(s, (config.EDITOR_SIDEBAR_W // 2 - s.get_width() // 2, y))
+        self._screen.blit(s, (SIDEBAR_W//2 - s.get_width()//2, y))
