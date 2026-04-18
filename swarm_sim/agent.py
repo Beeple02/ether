@@ -6,7 +6,9 @@ from .physics import normalize, limit, seek, euler_integrate
 class Agent:
     def __init__(self, position, role="drone"):
         self.position = np.array(position, dtype=float)
-        self.velocity = np.random.uniform(-1, 1, 2)
+        angle = np.random.uniform(0, 2 * np.pi)
+        speed = np.random.uniform(0.5, 1.5)
+        self.velocity = np.array([np.cos(angle), np.sin(angle)]) * speed
         self.role = role
         self.alive = True
         self._t = np.random.uniform(0, 2 * np.pi)
@@ -19,9 +21,8 @@ class Agent:
             return
         self._apply_boids(neighbors, relay_pos, environment)
 
-    def _move_relay(self, waypoints=None):
-        """Default figure-eight orbit. Overridden externally when waypoints exist."""
-        self._t += 0.01
+    def _move_relay(self):
+        self._t += 0.008
         cx, cy = config.WORLD_SIZE[0] / 2, config.WORLD_SIZE[1] / 2
         r = min(config.WORLD_SIZE) * 0.3
         nx = cx + r * np.sin(self._t)
@@ -39,10 +40,7 @@ class Agent:
         sep = self._separation(neighbors)
         aln = self._alignment(neighbors)
         coh = self._cohesion(neighbors)
-        rel = seek(
-            self.position, relay_pos, self.velocity,
-            config.MAX_SPEED, config.MAX_FORCE
-        )
+        rel = seek(self.position, relay_pos, self.velocity, config.MAX_SPEED, config.MAX_FORCE)
 
         w = config.WEIGHTS
         force = (
@@ -66,7 +64,11 @@ class Agent:
         for nb in neighbors:
             diff = self.position - nb.position
             d = np.linalg.norm(diff)
-            if 0 < d < config.SEPARATION_RADIUS:
+            if d < config.SEPARATION_RADIUS:
+                if d < 0.5:
+                    # Perfectly stacked: push in random direction to break symmetry
+                    diff = np.random.uniform(-1, 1, 2)
+                    d = max(np.linalg.norm(diff), 1e-4)
                 steer += normalize(diff) / d
                 count += 1
         if count > 0:
@@ -77,8 +79,7 @@ class Agent:
         if not neighbors:
             return np.zeros(2)
         avg_vel = np.mean([nb.velocity for nb in neighbors], axis=0)
-        desired = limit(avg_vel, config.MAX_SPEED)
-        steer = desired - self.velocity
+        steer = limit(avg_vel, config.MAX_SPEED) - self.velocity
         return limit(steer, config.MAX_FORCE)
 
     def _cohesion(self, neighbors):
