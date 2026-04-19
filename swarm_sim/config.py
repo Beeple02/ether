@@ -35,7 +35,7 @@ DRONE_TYPES = {
     "emp":              {"color": (175,  70, 220), "size": 3, "speed_mult": 1.2, "perception_mult": 1.0, "airframe": "small"},
     "jammer":           {"color": ( 35, 185, 185), "size": 3, "speed_mult": 1.0, "perception_mult": 1.0, "airframe": "small"},
     "interceptor_net":  {"color": ( 70, 215, 215), "size": 3, "speed_mult": 1.5, "perception_mult": 1.0, "airframe": "small"},
-    "interceptor_fuse": {"color": ( 50, 195, 195), "size": 4, "speed_mult": 1.2, "perception_mult": 1.0, "airframe": "small"},
+    "interceptor_fuse": {"color": ( 50, 195, 195), "size": 5, "speed_mult": 1.2, "perception_mult": 1.0, "airframe": "small"},
     "heavy":            {"color": (230, 145,  35), "size": 5, "speed_mult": 0.6, "perception_mult": 1.0, "airframe": "medium"},
     "loiter":           {"color": (215, 195,  35), "size": 5, "speed_mult": 0.7, "perception_mult": 1.0, "airframe": "medium"},
     "smokescreen":      {"color": (155, 160, 165), "size": 5, "speed_mult": 0.9, "perception_mult": 1.0, "airframe": "medium"},
