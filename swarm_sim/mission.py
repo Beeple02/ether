@@ -105,6 +105,16 @@ class FormationFSM:
             self._override_timer = 3.0
             self.mode            = "BUBBLE"
 
+    # ── RECON-driven timed override (auto-expires like BUBBLE) ────────────
+    def set_recon_override(self, mode, duration=2.0):
+        """Temporarily force a formation mode from RECON threat reports.
+        BUBBLE always takes priority; refreshes timer if same mode already active."""
+        if self._override == "BUBBLE" and self._override_timer > 0:
+            return  # BUBBLE is highest priority
+        self._override       = mode
+        self._override_timer = max(self._override_timer, duration)
+        self.mode            = mode
+
     # ── operator manual override ──────────────────────────────────────────
     def manual_set(self, mode):
         self.mode      = mode

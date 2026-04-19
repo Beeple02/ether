@@ -47,6 +47,10 @@ DC_TREE_HIT   = ( 50, 255, 100)
 DC_BLD_HIT    = (255,  75,  50)
 DC_ZONE_T     = ( 50, 255, 120)
 DC_ZONE_N     = (255,  50,  50)
+DC_RECON_SCAN = ( 75, 195,  75)   # RECON scan radius ring
+DC_THREAT_T   = (255,  80,  80)   # TURRET_THREAT label
+DC_THREAT_P   = (255, 215,  55)   # PROJECTILE_THREAT label
+DC_THREAT_D   = (220,  80, 220)   # DRONE_THREAT label
 
 FORCE_SCALE   = 55   # pixels per unit of force
 SIDEBAR_W     = config.EDITOR_SIDEBAR_W
@@ -355,6 +359,44 @@ class Renderer:
                           pos[1] + int(f[1] * FORCE_SCALE))
                     _arrow(self._screen, col, pos, fe, 1)
 
+        # ── RECON scan radii ──
+        recon_r = config.RECON_RANGE
+        for rd in alive:
+            if rd.drone_type != "recon":
+                continue
+            rpos = rd.position.astype(int)
+            scan_sz = recon_r * 2 + 2
+            scan_surf = pygame.Surface((scan_sz, scan_sz), pygame.SRCALPHA)
+            pygame.draw.circle(scan_surf, (*DC_RECON_SCAN, 18),
+                               (recon_r + 1, recon_r + 1), recon_r)
+            pygame.draw.circle(scan_surf, (*DC_RECON_SCAN, 70),
+                               (recon_r + 1, recon_r + 1), recon_r, 1)
+            self._screen.blit(scan_surf, (rpos[0] - recon_r - 1, rpos[1] - recon_r - 1))
+
+        # ── threat classification labels ──
+        _KIND_COL = {
+            "TURRET_THREAT":      DC_THREAT_T,
+            "PROJECTILE_THREAT":  DC_THREAT_P,
+            "DRONE_THREAT":       DC_THREAT_D,
+        }
+        _KIND_LABEL = {
+            "TURRET_THREAT":      "TURRET",
+            "PROJECTILE_THREAT":  "PROJ",
+            "DRONE_THREAT":       "DRONE",
+        }
+        seen_threat_ids = set()
+        for t in getattr(self.swarm, "_last_threats", []):
+            oid = id(t["obj"])
+            if oid in seen_threat_ids:
+                continue
+            seen_threat_ids.add(oid)
+            col   = _KIND_COL.get(t["kind"],   (200, 200, 200))
+            label = _KIND_LABEL.get(t["kind"], t["kind"])
+            ipos  = (int(t["pos"][0]), int(t["pos"][1]))
+            pygame.draw.circle(self._screen, col, ipos, 5, 1)
+            txt = self._font_sm.render(label, True, col)
+            self._screen.blit(txt, (ipos[0] - txt.get_width() // 2, ipos[1] - 22))
+
         # relay velocity
         rp  = self.swarm.relay.position.astype(int)
         rv  = self.swarm.relay.velocity
@@ -376,6 +418,10 @@ class Renderer:
             ((255,255, 60), "Path next node"),
             ((150,255,150), "Drone follow target"),
             ((200, 50, 50), "Blocked grid cell"),
+            (DC_RECON_SCAN, "RECON scan radius"),
+            (DC_THREAT_T,   "TURRET_THREAT"),
+            (DC_THREAT_P,   "PROJECTILE_THREAT"),
+            (DC_THREAT_D,   "DRONE_THREAT"),
         ]
         x0 = config.WORLD_SIZE[0] - 200
         y0 = 8

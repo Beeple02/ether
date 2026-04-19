@@ -86,6 +86,7 @@ class Swarm:
         self._formation        = FormationFSM()
         self.effects           = []
         self._succession_active = False   # True while mimicry window is open
+        self._last_threats      = []      # RECON reports from last tick (for renderer)
 
         # assign per-FAST convergence angles
         fast_drones = [d for d in self.drones if d.drone_type == "fast"]
@@ -190,6 +191,8 @@ class Swarm:
             drone.tick(self._neighbors(drone, alive), ft, env, context=ctx)
 
         self._process_events(ctx["events"])
+        self._process_threat_reports(ctx["threats"])
+        self._last_threats = ctx["threats"]
         self._update_threats()
         self._check_end_conditions()
 
@@ -593,6 +596,40 @@ class Swarm:
     def advance_phase(self):
         if self._mission.advance():
             self._formation.set_for_phase(self._mission.phase)
+
+    # ── RECON threat aggregation ──────────────────────────────────────────────
+    def _process_threat_reports(self, threats):
+        """Aggregate per-tick RECON reports and trigger formation responses.
+
+        Priority (highest→lowest):
+          PROJECTILE_THREAT           → BUBBLE
+          DRONE_THREAT or ≥3 turrets  → DISPERSED
+          1-2 TURRET_THREAT+SATURATION→ DENSE
+        """
+        if not threats:
+            return
+
+        # Deduplicate by object identity; multiple RECON drones may see the same object.
+        seen_turrets = {}
+        seen_projs   = {}
+        seen_enemies = {}
+        for t in threats:
+            oid = id(t["obj"])
+            if   t["kind"] == "TURRET_THREAT":      seen_turrets[oid] = t
+            elif t["kind"] == "PROJECTILE_THREAT":  seen_projs[oid]   = t
+            elif t["kind"] == "DRONE_THREAT":        seen_enemies[oid] = t
+
+        n_turrets = len(seen_turrets)
+        has_proj  = bool(seen_projs)
+        has_drone = bool(seen_enemies)
+        phase     = self._mission.phase
+
+        if has_proj:
+            self._formation.set_bubble(True)
+        elif has_drone or n_turrets >= 3:
+            self._formation.set_recon_override("DISPERSED")
+        elif n_turrets > 0 and phase == "SATURATION":
+            self._formation.set_recon_override("DENSE")
 
     # ── relay succession ──────────────────────────────────────────────────────
     def _update_succession(self):
