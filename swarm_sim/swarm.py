@@ -129,16 +129,29 @@ class Swarm:
         n_alive = len(alive)
 
         target_center = self._target_center()
-        n_interceptors = sum(
-            1 for d in alive
-            if d.drone_type in ("interceptor_net", "interceptor_fuse")
-        )
+
+        # pre-compute per-interceptor indices (stable, dict-keyed by id)
+        _INT_TYPES = ("interceptor_net", "interceptor_fuse")
+        int_alive   = [d for d in alive if d.drone_type in _INT_TYPES]
+        int_indices = {id(d): i for i, d in enumerate(int_alive)}
+        n_interceptors = len(int_alive)
+
+        # BUBBLE trigger — enemy projectile or drone within threshold of relay
+        relay_p  = self.relay.position
+        trig_r2  = config.BUBBLE_TRIGGER_RADIUS ** 2
+        _threat  = any(np.sum((p.position - relay_p) ** 2) < trig_r2
+                       for p in self.projectiles if p.alive)
+        if not _threat:
+            _threat = any(np.sum((d.position - relay_p) ** 2) < trig_r2
+                          for d in self.drones if d.alive and d.side == "enemy")
+        if _threat:
+            self._formation.set_bubble(True)
 
         # shared context written-to by all drone ticks this frame
         ctx = {
             "phase":               self._mission.phase,
             "formation_mode":      self._formation.mode,
-            "relay_pos":           self.relay.position.copy(),
+            "relay_pos":           relay_p.copy(),
             "relay_vel":           self.relay.velocity.copy(),
             "turrets":             env.turrets if env else [],
             "projectiles":         self.projectiles,
@@ -155,13 +168,11 @@ class Swarm:
             "total_elapsed":       self._mission.total_elapsed,
         }
 
-        interceptor_idx = 0
         for i, drone in enumerate(alive):
-            ctx["drone_idx"] = i
-            if drone.drone_type in ("interceptor_net", "interceptor_fuse"):
-                ctx["drone_idx"] = interceptor_idx
-                interceptor_idx += 1
-            ft = self._formation_target(drone, i, n_alive)
+            is_int  = drone.drone_type in _INT_TYPES
+            int_idx = int_indices.get(id(drone), 0) if is_int else 0
+            ctx["drone_idx"] = int_idx if is_int else i
+            ft = self._formation_target(drone, i, n_alive, int_idx, n_interceptors)
             drone.tick(self._neighbors(drone, alive), ft, env, context=ctx)
 
         self._process_events(ctx["events"])
@@ -212,50 +223,81 @@ class Swarm:
                 d.alive = False
 
     # ── formation target ──────────────────────────────────────────────────────
-    def _formation_target(self, drone, drone_idx, n_alive):
+    def _formation_target(self, drone, drone_idx, n_alive,
+                          interceptor_idx=0, n_interceptors=0):
         mode      = self._formation.mode
         phase     = self._mission.phase
         relay_pos = self.relay.position
         relay_vel = self.relay.velocity
+        is_int    = drone.drone_type in ("interceptor_net", "interceptor_fuse")
 
-        # PERSISTENCE: return non-loiter drones to base
+        # PERSISTENCE: non-loiter drones return to base
         if phase == "PERSISTENCE" and drone.drone_type != "loiter":
             base = self._base_pos()
             if base is not None:
                 return base
 
+        # ── BUBBLE positioning rules ──────────────────────────────────────────
+        # Applies when: (a) mode == BUBBLE  OR (b) SATURATION phase (interceptors
+        # always hold the perimeter even while the main formation is DENSE).
+        # Interceptors → equal-angle ring at BUBBLE_RADIUS.
+        # All other drones → hold tight DENSE around relay.
+        want_bubble = (mode == "BUBBLE") or (phase == "SATURATION" and is_int)
+        if want_bubble:
+            if is_int:
+                n     = max(n_interceptors, 1)
+                angle = 2 * np.pi * interceptor_idx / n
+                return relay_pos + np.array([np.cos(angle), np.sin(angle)]) * config.BUBBLE_RADIUS
+            else:
+                # non-interceptors: DENSE ring around relay
+                angle = 2 * np.pi * drone_idx / max(n_alive, 1)
+                return relay_pos + np.array([np.cos(angle), np.sin(angle)]) * (
+                    config.SEPARATION_RADIUS * 2)
+
+        # ── COLUMN: staggered double-file behind relay heading ─────────────────
+        # Spec: 2-wide, spaced by SEPARATION_RADIUS.
         if mode == "COLUMN":
             speed = float(np.linalg.norm(relay_vel))
             fwd   = relay_vel / speed if speed > 0.1 else np.array([0.0, -1.0])
             perp  = np.array([-fwd[1], fwd[0]])
-            col   = (drone_idx % 4) - 1.5
-            row   = drone_idx // 4 + 1
-            return relay_pos - fwd * (row * 18) + perp * (col * 14)
+            col   = (drone_idx % 2) - 0.5          # left/right file: -0.5 or +0.5
+            row   = drone_idx // 2 + 1             # rows: 1 1 2 2 3 3 …
+            sp    = float(config.SEPARATION_RADIUS)
+            return relay_pos - fwd * (row * sp) + perp * (col * sp)
 
+        # ── DENSE: tight cluster around relay ─────────────────────────────────
         if mode == "DENSE":
-            ft    = self._drone_follow_target()
             angle = 2 * np.pi * drone_idx / max(n_alive, 1)
-            return ft + np.array([np.cos(angle), np.sin(angle)]) * 35
+            return relay_pos + np.array([np.cos(angle), np.sin(angle)]) * (
+                config.SEPARATION_RADIUS * 2)
 
+        # ── DISPERSED: multi-ring layout, ~PERCEPTION_RADIUS between rings ─────
         if mode == "DISPERSED":
-            angle = 2 * np.pi * drone_idx / max(n_alive, 1)
-            return relay_pos + np.array([np.cos(angle), np.sin(angle)]) * 130
+            return self._dispersed_target(drone_idx, relay_pos)
 
+        # ── PURSUIT: each drone heads directly to target zone ─────────────────
         if mode == "PURSUIT":
             tc = self._target_center()
-            if tc is not None:
-                fwd  = normalize(tc - relay_pos)
-                perp = np.array([-fwd[1], fwd[0]])
-                side = 1 if drone_idx % 2 == 0 else -1
-                row  = drone_idx // 2 + 1
-                return relay_pos + fwd * (row * 12) + perp * (side * row * 20)
-            return relay_pos.copy()
-
-        if mode == "BUBBLE":
-            angle = 2 * np.pi * drone_idx / max(n_alive, 1)
-            return relay_pos + np.array([np.cos(angle), np.sin(angle)]) * config.BUBBLE_RADIUS
+            return tc if tc is not None else relay_pos.copy()
 
         return self._drone_follow_target()
+
+    def _dispersed_target(self, drone_idx, center):
+        """Assign drone_idx a slot in expanding rings spaced PERCEPTION_RADIUS apart."""
+        per_r = float(config.PERCEPTION_RADIUS)
+        ring  = 1
+        total = 0
+        while True:
+            n_in_ring = max(1, int(2 * np.pi * ring))   # ≈ 6, 12, 19, 25, 31 …
+            if drone_idx < total + n_in_ring:
+                slot  = drone_idx - total
+                angle = 2 * np.pi * slot / n_in_ring
+                return center + np.array([np.cos(angle), np.sin(angle)]) * (ring * per_r)
+            total += n_in_ring
+            ring  += 1
+            if ring > 25:   # safety cap — beyond 2000 px
+                break
+        return center.copy()
 
     # ── event processing ──────────────────────────────────────────────────────
     def _process_events(self, events):

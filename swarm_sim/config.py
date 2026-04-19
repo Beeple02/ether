@@ -139,7 +139,8 @@ INTERCEPTOR_NET_RADIUS = 60  # px — net effect radius
 INTERCEPTOR_NET_CD     = 3.0 # seconds cooldown after deploy
 INTERCEPTOR_FUSE_RANGE = 25  # px — trigger fuse detonation
 
-BUBBLE_RADIUS = 80   # px around relay for BUBBLE formation
+BUBBLE_RADIUS         = 80   # px around relay for BUBBLE formation
+BUBBLE_TRIGGER_RADIUS = 500  # px — enemy projectile/drone within this triggers BUBBLE
 
 # ── relay succession ─────────────────────────────────────────────────────────
 MIMICRY_DELAY_MIN = 5.0
