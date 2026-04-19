@@ -2,6 +2,7 @@ import pygame
 import numpy as np
 from . import config
 from .environment import ZONE_COLORS
+from .effects import EMPBlast, SmokeCloud, NetDeploy, Explosion
 
 # ── palette ───────────────────────────────────────────────────────────────────
 C_BG          = (14,  15,  24)
@@ -118,8 +119,10 @@ class Renderer:
             self._draw_debug(env)
         elif self.show_lines:
             self._draw_relay_lines()
+        self._draw_effects()
         self._draw_drones()
         self._draw_relay()
+        self._draw_projectiles()
         self._draw_hud(fps, paused)
         self._draw_type_legend()
         if self.debug_mode:
@@ -133,6 +136,7 @@ class Renderer:
         for w in env.walls:     self._wall(w)
         for i, wp in enumerate(env.waypoints):
             self._waypoint(wp, i + 1)
+        for t in env.turrets:   self._turret(t)
 
     def _zone(self, zone):
         x, y, w, h = (int(v) for v in zone.rect)
@@ -181,6 +185,24 @@ class Renderer:
         txt = self._font.render(str(idx), True, C_WP)
         self._screen.blit(txt, (px + 9, py - 9))
 
+    def _turret(self, turret):
+        pos = turret.position.astype(int)
+        disabled = turret._disabled_timer > 0
+        body_col = (70, 72, 88) if disabled else (195, 55, 40)
+        ring_col = (55, 58, 75) if disabled else (230, 90, 65)
+        # faint range ring
+        r = int(turret.range)
+        alpha_surf = pygame.Surface((r * 2 + 2, r * 2 + 2), pygame.SRCALPHA)
+        pygame.draw.circle(alpha_surf, (*ring_col, 18), (r + 1, r + 1), r, 1)
+        self._screen.blit(alpha_surf, (pos[0] - r - 1, pos[1] - r - 1))
+        # body
+        pygame.draw.circle(self._screen, body_col, pos, 7)
+        pygame.draw.circle(self._screen, ring_col, pos, 7, 2)
+        if disabled:
+            # small EMP-disabled indicator cross
+            pygame.draw.line(self._screen, (120, 60, 220), (pos[0]-4, pos[1]-4), (pos[0]+4, pos[1]+4), 1)
+            pygame.draw.line(self._screen, (120, 60, 220), (pos[0]+4, pos[1]-4), (pos[0]-4, pos[1]+4), 1)
+
     # ── agents ────────────────────────────────────────────────────────────────
     def _draw_relay_lines(self):
         rp = self.swarm.relay.position
@@ -208,6 +230,46 @@ class Renderer:
         rp = self.swarm.relay.position.astype(int)
         pygame.draw.circle(self._screen, C_RELAY_RING, rp, 12)
         pygame.draw.circle(self._screen, C_RELAY,      rp, 10)
+
+    def _draw_projectiles(self):
+        for p in self.swarm.projectiles:
+            if p.alive:
+                pygame.draw.circle(self._screen, (255, 215, 55),
+                                   p.position.astype(int), config.PROJECTILE_RADIUS)
+
+    def _draw_effects(self):
+        for fx in self.swarm.effects:
+            if not fx.alive:
+                continue
+            r = max(1, int(getattr(fx, 'radius', 0)))
+            a = int(getattr(fx, 'alpha', 0) * 255)
+            if r < 1 or a < 1:
+                continue
+            pos = fx.position.astype(int)
+            sz  = r * 2 + 4
+
+            if isinstance(fx, SmokeCloud):
+                surf = pygame.Surface((sz, sz), pygame.SRCALPHA)
+                pygame.draw.circle(surf, (155, 160, 165, a), (r + 2, r + 2), r)
+                self._screen.blit(surf, (pos[0] - r - 2, pos[1] - r - 2))
+
+            elif isinstance(fx, EMPBlast):
+                surf = pygame.Surface((sz, sz), pygame.SRCALPHA)
+                pygame.draw.circle(surf, (120, 60, 220, a),     (r + 2, r + 2), r, 3)
+                pygame.draw.circle(surf, (200, 150, 255, a // 2),
+                                   (r + 2, r + 2), max(1, r // 3))
+                self._screen.blit(surf, (pos[0] - r - 2, pos[1] - r - 2))
+
+            elif isinstance(fx, NetDeploy):
+                surf = pygame.Surface((sz, sz), pygame.SRCALPHA)
+                pygame.draw.circle(surf, (70, 215, 215, a), (r + 2, r + 2), r, 2)
+                self._screen.blit(surf, (pos[0] - r - 2, pos[1] - r - 2))
+
+            elif isinstance(fx, Explosion):
+                col  = (*fx.color[:3], a)
+                surf = pygame.Surface((sz, sz), pygame.SRCALPHA)
+                pygame.draw.circle(surf, col, (r + 2, r + 2), r)
+                self._screen.blit(surf, (pos[0] - r - 2, pos[1] - r - 2))
 
     # ── debug overlay ─────────────────────────────────────────────────────────
     def _draw_debug(self, env):
@@ -366,9 +428,12 @@ class Renderer:
 
     # ── HUD ──────────────────────────────────────────────────────────────────
     def _draw_hud(self, fps, paused):
-        w    = config.WEIGHTS
+        w       = config.WEIGHTS
+        mission = self.swarm._mission
         rows = [
             ("FPS",    f"{fps:.0f}" + ("  ■ PAUSED" if paused else "")),
+            ("PHASE",  mission.phase),
+            ("FORM",   self.swarm._formation.mode),
             ("DRONES", f"{self.swarm.alive_count} / {config.NUM_DRONES}"),
             ("SPEED",  f"{config.MAX_SPEED:.1f}"),
             ("SEP",    f"{w['separation']:.1f}"),
@@ -386,7 +451,7 @@ class Renderer:
             y = 6 + pad + i * lh
             self._screen.blit(self._font.render(label, True, C_HUD_LABEL), (14, y))
             self._screen.blit(self._font.render(val,   True, C_HUD_VAL),   (82, y))
-        hints = ("[SPC]Pause [R]Reset [E]Editor [L]Lines [K]Kill "
+        hints = ("[SPC]Pause [R]Reset [M]Phase [E]Editor [L]Lines [K]Kill "
                  "[↑↓]Drones [+−]Speed [1-4/S+1-4]Weights [TAB]Debug [F11]Fullscreen")
         hs = pygame.font.SysFont("monospace", 11).render(hints, True, (52, 65, 95))
         self._screen.blit(hs, (6, config.WORLD_SIZE[1] - 15))

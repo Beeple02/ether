@@ -5,6 +5,8 @@ from .agent import Agent
 from .pathfinder import PathFinder
 from .physics import normalize
 from .environment import Projectile
+from .mission import MissionFSM, FormationFSM
+from .effects import EMPBlast, SmokeCloud, NetDeploy, Explosion
 
 
 class RunStats:
@@ -80,6 +82,13 @@ class Swarm:
         self._replan_in   = 0
         self.stats        = RunStats()
         self.stats.drones_total = config.NUM_DRONES
+        self._mission   = MissionFSM()
+        self._formation = FormationFSM()
+        self.effects    = []
+        # assign per-FAST convergence angles
+        fast_drones = [d for d in self.drones if d.drone_type == "fast"]
+        for k, d in enumerate(fast_drones):
+            d._convergence_angle = 2 * np.pi * k / max(len(fast_drones), 1)
 
     def set_environment(self, env):
         self._environment = env
@@ -100,19 +109,62 @@ class Swarm:
         if self.stats.ended:
             return
 
+        dt  = 1.0 / config.FPS
+        env = self._environment
+
+        # tick FSMs
+        self._mission.tick(dt, self)
+        self._formation.tick(dt, self._mission.phase)
+
+        # tick and cull dead effects
+        for fx in self.effects:
+            fx.tick(dt)
+        self.effects = [fx for fx in self.effects if fx.alive]
+
         self._update_relay()
         self._update_signals()
         self._update_noflyzone()
 
         alive = [d for d in self.drones if d.alive]
-        shield_forces = self._shield_forces(alive) if self._environment else {}
+        n_alive = len(alive)
 
+        target_center = self._target_center()
+        n_interceptors = sum(
+            1 for d in alive
+            if d.drone_type in ("interceptor_net", "interceptor_fuse")
+        )
+
+        # shared context written-to by all drone ticks this frame
+        ctx = {
+            "phase":               self._mission.phase,
+            "formation_mode":      self._formation.mode,
+            "relay_pos":           self.relay.position.copy(),
+            "relay_vel":           self.relay.velocity.copy(),
+            "turrets":             env.turrets if env else [],
+            "projectiles":         self.projectiles,
+            "enemy_drones":        [],
+            "player_drones":       self.drones,
+            "all_agents":          self.drones + [self.relay],
+            "target_center":       target_center,
+            "target_radius":       120.0,
+            "threats":             [],
+            "events":              [],
+            "n_interceptors":      n_interceptors,
+            "convergence_enabled": config.CONVERGENCE_ENABLED,
+            "t_zero":              self._mission.total_elapsed + config.CONVERGENCE_T_LEAD,
+            "total_elapsed":       self._mission.total_elapsed,
+        }
+
+        interceptor_idx = 0
         for i, drone in enumerate(alive):
-            ft = self._formation_target(i, len(alive))
-            sf = shield_forces.get(id(drone))
-            drone.tick(self._neighbors(drone, alive), ft,
-                       self._environment, shield_force=sf)
+            ctx["drone_idx"] = i
+            if drone.drone_type in ("interceptor_net", "interceptor_fuse"):
+                ctx["drone_idx"] = interceptor_idx
+                interceptor_idx += 1
+            ft = self._formation_target(drone, i, n_alive)
+            drone.tick(self._neighbors(drone, alive), ft, env, context=ctx)
 
+        self._process_events(ctx["events"])
         self._update_threats()
         self._check_end_conditions()
 
@@ -160,49 +212,108 @@ class Swarm:
                 d.alive = False
 
     # ── formation target ──────────────────────────────────────────────────────
-    def _formation_target(self, drone_idx, n_alive):
-        mode      = config.FORMATION_MODE
+    def _formation_target(self, drone, drone_idx, n_alive):
+        mode      = self._formation.mode
+        phase     = self._mission.phase
         relay_pos = self.relay.position
+        relay_vel = self.relay.velocity
 
-        if mode == "ring":
-            angle = 2 * np.pi * drone_idx / max(n_alive, 1)
-            r     = config.FORMATION_RING_RADIUS
-            return relay_pos + np.array([np.cos(angle), np.sin(angle)]) * r
+        # PERSISTENCE: return non-loiter drones to base
+        if phase == "PERSISTENCE" and drone.drone_type != "loiter":
+            base = self._base_pos()
+            if base is not None:
+                return base
 
-        if mode == "V":
-            rv    = self.relay.velocity
-            speed = float(np.linalg.norm(rv))
-            fwd   = rv / speed if speed > 0.1 else np.array([0.0, -1.0])
+        if mode == "COLUMN":
+            speed = float(np.linalg.norm(relay_vel))
+            fwd   = relay_vel / speed if speed > 0.1 else np.array([0.0, -1.0])
             perp  = np.array([-fwd[1], fwd[0]])
-            row   = drone_idx // 2 + 1
-            side  = 1 if drone_idx % 2 == 0 else -1
-            return relay_pos - fwd * row * 25 + perp * (side * row * 20)
+            col   = (drone_idx % 4) - 1.5
+            row   = drone_idx // 4 + 1
+            return relay_pos - fwd * (row * 18) + perp * (col * 14)
 
-        # flock — existing path-following target
+        if mode == "DENSE":
+            ft    = self._drone_follow_target()
+            angle = 2 * np.pi * drone_idx / max(n_alive, 1)
+            return ft + np.array([np.cos(angle), np.sin(angle)]) * 35
+
+        if mode == "DISPERSED":
+            angle = 2 * np.pi * drone_idx / max(n_alive, 1)
+            return relay_pos + np.array([np.cos(angle), np.sin(angle)]) * 130
+
+        if mode == "PURSUIT":
+            tc = self._target_center()
+            if tc is not None:
+                fwd  = normalize(tc - relay_pos)
+                perp = np.array([-fwd[1], fwd[0]])
+                side = 1 if drone_idx % 2 == 0 else -1
+                row  = drone_idx // 2 + 1
+                return relay_pos + fwd * (row * 12) + perp * (side * row * 20)
+            return relay_pos.copy()
+
+        if mode == "BUBBLE":
+            angle = 2 * np.pi * drone_idx / max(n_alive, 1)
+            return relay_pos + np.array([np.cos(angle), np.sin(angle)]) * config.BUBBLE_RADIUS
+
         return self._drone_follow_target()
 
-    # ── shield intercept ──────────────────────────────────────────────────────
-    def _shield_forces(self, alive):
+    # ── event processing ──────────────────────────────────────────────────────
+    def _process_events(self, events):
         env = self._environment
-        out = {}
-        if env is None or not env.turrets:
-            return out
-        relay_pos = self.relay.position
-        for d in alive:
-            if d.drone_type != "shield":
-                continue
-            nearest = None
-            nd = 1e18
-            for t in env.turrets:
-                dd = float(np.linalg.norm(t.position - relay_pos))
-                if dd < nd:
-                    nd = dd
-                    nearest = t
-            if nearest is None:
-                continue
-            slot = relay_pos + (nearest.position - relay_pos) * 0.45
-            out[id(d)] = normalize(slot - d.position)
-        return out
+        for evt in events:
+            etype = evt["type"]
+
+            if etype == "emp_detonate":
+                pos    = evt["position"]
+                radius = evt.get("radius", config.EMP_EFFECT_RADIUS)
+                self.effects.append(EMPBlast(pos, radius))
+                self._mission.on_emp_detonated()
+                if env:
+                    for t in env.turrets:
+                        if np.linalg.norm(t.position - pos) <= radius:
+                            t._disabled_timer = config.EMP_DISABLE_TIME
+                for d in self.drones:
+                    if d.alive and d.side == "enemy":
+                        if np.linalg.norm(d.position - pos) <= radius:
+                            d._stun_timer = config.EMP_STUN_TIME
+
+            elif etype == "smoke_deploy":
+                self.effects.append(SmokeCloud(
+                    evt["position"],
+                    config.SMOKESCREEN_RADIUS,
+                    config.SMOKESCREEN_PERSIST,
+                ))
+
+            elif etype == "net_deploy":
+                pos    = evt["position"]
+                radius = evt.get("radius", config.INTERCEPTOR_NET_RADIUS)
+                self.effects.append(NetDeploy(pos, radius))
+                for p in self.projectiles:
+                    if p.alive and np.linalg.norm(p.position - pos) <= radius:
+                        p.alive = False
+                for d in self.drones:
+                    if d.alive and d.side == "enemy":
+                        if np.linalg.norm(d.position - pos) <= radius:
+                            d.alive = False
+                            self.effects.append(Explosion(d.position.copy(), 12))
+
+            elif etype == "fuse_detonate":
+                pos    = evt["position"]
+                radius = evt.get("radius", config.INTERCEPTOR_FUSE_RANGE * 3)
+                self.effects.append(Explosion(pos, radius * 0.5, (255, 180, 30)))
+                for p in self.projectiles:
+                    if p.alive and np.linalg.norm(p.position - pos) <= radius:
+                        p.alive = False
+                for d in self.drones:
+                    if d.alive and d.side == "enemy":
+                        if np.linalg.norm(d.position - pos) <= radius:
+                            d.alive = False
+
+            elif etype == "explosion":
+                self.effects.append(Explosion(
+                    evt["position"], 18,
+                    evt.get("color", (255, 140, 40)),
+                ))
 
     # ── relay navigation ──────────────────────────────────────────────────────
     def _update_relay(self):
@@ -291,13 +402,24 @@ class Swarm:
         W, H = config.WORLD_SIZE
 
         if env and env.turrets:
+            jammer_pos = [
+                d.position.copy() for d in self.drones
+                if d.alive and d.drone_type == "jammer"
+            ]
             candidates = [d for d in self.drones if d.alive]
             if self.relay.alive:
                 candidates.append(self.relay)
+
             for turret in env.turrets:
+                # EMP disable countdown
+                if turret._disabled_timer > 0:
+                    turret._disabled_timer -= dt
+                    continue
+
                 turret._cooldown -= dt
                 if turret._cooldown > 0:
                     continue
+
                 nearest = None
                 nd = turret.range
                 for t in candidates:
@@ -305,31 +427,57 @@ class Swarm:
                     if d < nd:
                         nd = d
                         nearest = t
-                if nearest is not None:
-                    direction = normalize(nearest.position - turret.position)
-                    vel = direction * speed_per_frame
-                    self.projectiles.append(Projectile(turret.position.copy(), vel))
+                if nearest is None:
+                    continue
+
+                # jammer miss chance
+                jammed = any(
+                    np.linalg.norm(jp - turret.position) <= config.JAMMER_RANGE
+                    for jp in jammer_pos
+                )
+                if jammed and np.random.random() < config.JAMMER_MISS_CHANCE:
                     turret._cooldown = 1.0 / max(turret.fire_rate, 1e-3)
+                    continue
+
+                direction = normalize(nearest.position - turret.position)
+                self.projectiles.append(Projectile(turret.position.copy(),
+                                                   direction * speed_per_frame))
+                turret._cooldown = 1.0 / max(turret.fire_rate, 1e-3)
+
+        smoke_clouds = [fx for fx in self.effects
+                        if isinstance(fx, SmokeCloud) and fx.alive]
 
         for p in self.projectiles:
             if not p.alive:
                 continue
             p.position = p.position + p.velocity
             if (p.position[0] < 0 or p.position[0] > W or
-                p.position[1] < 0 or p.position[1] > H):
+                    p.position[1] < 0 or p.position[1] > H):
                 p.alive = False
                 continue
+
+            # smoke cloud miss chance
+            in_smoke = any(
+                np.linalg.norm(p.position - sc.position) < sc.radius
+                for sc in smoke_clouds
+            )
+            if in_smoke and np.random.random() < config.SMOKESCREEN_MISS_CH:
+                p.alive = False
+                continue
+
             hit = False
             for d in self.drones:
                 if d.alive and np.linalg.norm(p.position - d.position) < config.DRONE_HIT_RADIUS:
                     d.alive = False
                     p.alive = False
+                    self.effects.append(Explosion(d.position.copy(), 12, (255, 120, 30)))
                     hit = True
                     break
             if not hit and self.relay.alive:
                 if np.linalg.norm(p.position - self.relay.position) < config.RELAY_HIT_RADIUS:
                     self.relay.alive = False
                     p.alive = False
+                    self.effects.append(Explosion(self.relay.position.copy(), 20, (255, 60, 20)))
 
         self.projectiles = [p for p in self.projectiles if p.alive]
 
@@ -369,6 +517,27 @@ class Swarm:
     def end_run_manual(self):
         if not self.stats.ended:
             self._finalise("manual")
+
+    # ── phase control ─────────────────────────────────────────────────────────
+    def advance_phase(self):
+        if self._mission.advance():
+            self._formation.set_for_phase(self._mission.phase)
+
+    # ── environment helpers ───────────────────────────────────────────────────
+    def _base_pos(self):
+        env = self._environment
+        if env and env.base is not None:
+            return env.base.position.copy()
+        return None
+
+    def _target_center(self):
+        env = self._environment
+        if not env:
+            return None
+        targets = [z for z in env.zones if z.zone_type == "TARGET"]
+        if not targets:
+            return None
+        return np.mean([z.center() for z in targets], axis=0)
 
     # ── utils ─────────────────────────────────────────────────────────────────
     def _neighbors(self, agent, alive):
