@@ -91,14 +91,27 @@ class Agent:
         if self._is_relay or self.role == "relay":
             return  # movement handled by Swarm._update_relay
 
-        # relay_backup mimicry
+        # relay_backup mimicry — move like relay toward relay goal
         if self.drone_type == "relay_backup" and self._mimicry_active:
             self._mimicry_timer -= dt
             if self._mimicry_timer <= 0:
+                # Timer expired: emit event so swarm can decide promote vs. revert
                 self._mimicry_active = False
-            self._move_toward(formation_target or np.array(config.WORLD_SIZE) / 2, environment)
-            self._finalize_reflex(context, environment)
-            return
+                context.setdefault("events", []).append({
+                    "type":  "mimicry_expired",
+                    "drone": self,
+                })
+                # Fall through to normal relay_backup behavior this tick
+            else:
+                # Still in window: navigate toward relay's goal (formation_target
+                # is set to relay_goal by swarm._formation_target for these drones)
+                self._move_toward(
+                    formation_target if formation_target is not None
+                    else np.array(config.WORLD_SIZE, dtype=float) / 2,
+                    environment,
+                )
+                self._finalize_reflex(context, environment)
+                return
 
         # relay_backup that just got promoted
         if self._is_relay:

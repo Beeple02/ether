@@ -215,16 +215,25 @@ class Renderer:
         for d in self.swarm.drones:
             if not d.alive:
                 continue
+            if d._is_relay:
+                continue   # promoted relay is drawn by _draw_relay()
+
             color = d.type_color
             size  = d.type_size
             pos   = d.position
             af    = d.airframe
+            ipos  = (int(pos[0]), int(pos[1]))
+
+            # Mimicry window: draw relay-style ring around the drone
+            if d._mimicry_active:
+                pygame.draw.circle(self._screen, C_RELAY_RING, ipos, size + 6, 1)
+
             if af == "medium":
                 _draw_diamond(self._screen, color, pos, size)
             elif af == "large":
                 _draw_triangle(self._screen, color, pos, size, d.velocity)
             else:
-                pygame.draw.circle(self._screen, color, (int(pos[0]), int(pos[1])), size)
+                pygame.draw.circle(self._screen, color, ipos, size)
 
     def _draw_relay(self):
         rp = self.swarm.relay.position.astype(int)

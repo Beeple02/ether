@@ -82,13 +82,20 @@ class Swarm:
         self._replan_in   = 0
         self.stats        = RunStats()
         self.stats.drones_total = config.NUM_DRONES
-        self._mission   = MissionFSM()
-        self._formation = FormationFSM()
-        self.effects    = []
+        self._mission          = MissionFSM()
+        self._formation        = FormationFSM()
+        self.effects           = []
+        self._succession_active = False   # True while mimicry window is open
+
         # assign per-FAST convergence angles
         fast_drones = [d for d in self.drones if d.drone_type == "fast"]
         for k, d in enumerate(fast_drones):
             d._convergence_angle = 2 * np.pi * k / max(len(fast_drones), 1)
+
+        # assign succession ranks 1..N to relay_backup drones
+        backups = [d for d in self.drones if d.drone_type == "relay_backup"]
+        for rank, d in enumerate(backups, start=1):
+            d.succession_rank = rank
 
     def set_environment(self, env):
         self._environment = env
@@ -121,11 +128,14 @@ class Swarm:
             fx.tick(dt)
         self.effects = [fx for fx in self.effects if fx.alive]
 
+        self._update_succession()
         self._update_relay()
         self._update_signals()
         self._update_noflyzone()
 
-        alive = [d for d in self.drones if d.alive]
+        # Exclude promoted drones (_is_relay) from the flock loop — they are
+        # moved by _update_relay() and drawn via _draw_relay(), not as drones.
+        alive = [d for d in self.drones if d.alive and not d._is_relay]
         n_alive = len(alive)
 
         target_center = self._target_center()
@@ -147,6 +157,10 @@ class Swarm:
         if _threat:
             self._formation.set_bubble(True)
 
+        # all_agents for collision avoidance — relay counted exactly once
+        _relay_in_drones = any(d is self.relay for d in self.drones)
+        all_agents = alive + ([] if _relay_in_drones else [self.relay])
+
         # shared context written-to by all drone ticks this frame
         ctx = {
             "phase":               self._mission.phase,
@@ -157,7 +171,7 @@ class Swarm:
             "projectiles":         self.projectiles,
             "enemy_drones":        [],
             "player_drones":       self.drones,
-            "all_agents":          self.drones + [self.relay],
+            "all_agents":          all_agents,
             "target_center":       target_center,
             "target_radius":       120.0,
             "threats":             [],
@@ -230,6 +244,12 @@ class Swarm:
         relay_pos = self.relay.position
         relay_vel = self.relay.velocity
         is_int    = drone.drone_type in ("interceptor_net", "interceptor_fuse")
+
+        # Mimicry backups navigate to relay goal (waypoint or target zone),
+        # making them visually indistinguishable from the real relay in motion.
+        if drone.drone_type == "relay_backup" and drone._mimicry_active:
+            goal = self._relay_goal()
+            return goal if goal is not None else relay_pos.copy()
 
         # PERSISTENCE: non-loiter drones return to base
         if phase == "PERSISTENCE" and drone.drone_type != "loiter":
@@ -356,6 +376,9 @@ class Swarm:
                     evt["position"], 18,
                     evt.get("color", (255, 140, 40)),
                 ))
+
+            elif etype == "mimicry_expired":
+                self._try_promote_or_revert(evt["drone"])
 
     # ── relay navigation ──────────────────────────────────────────────────────
     def _update_relay(self):
@@ -530,7 +553,13 @@ class Swarm:
         env = self._environment
 
         if not self.relay.alive:
-            self._finalise("relay_dead")
+            # End only when no succession can save the mission:
+            # succession is inactive AND no live backups remain.
+            if not self._succession_active:
+                alive_backups = [d for d in self.drones
+                                 if d.alive and d.drone_type == "relay_backup"]
+                if not alive_backups:
+                    self._finalise("relay_dead")
             return
 
         if env:
@@ -564,6 +593,74 @@ class Swarm:
     def advance_phase(self):
         if self._mission.advance():
             self._formation.set_for_phase(self._mission.phase)
+
+    # ── relay succession ──────────────────────────────────────────────────────
+    def _update_succession(self):
+        """Open mimicry window when relay dies; close it if all backups die."""
+        if self.relay.alive:
+            return
+
+        if not self._succession_active:
+            backups = [d for d in self.drones
+                       if d.alive and d.drone_type == "relay_backup"]
+            if backups:
+                self._succession_active = True
+                for d in backups:
+                    d._mimicry_active = True
+                    d._mimicry_timer  = np.random.uniform(
+                        config.MIMICRY_DELAY_MIN, config.MIMICRY_DELAY_MAX
+                    )
+        else:
+            # Check if all backups died mid-window — succession fails
+            alive_backups = [d for d in self.drones
+                             if d.alive and d.drone_type == "relay_backup"]
+            if not alive_backups:
+                self._succession_active = False   # triggers run-end next frame
+
+    def _try_promote_or_revert(self, drone):
+        """Called when a relay_backup's mimicry timer expires."""
+        if not drone.alive:
+            return
+        # Find alive backups by rank to determine if this drone should promote
+        alive_backups = sorted(
+            [d for d in self.drones
+             if d.alive and d.drone_type == "relay_backup"],
+            key=lambda x: x.succession_rank,
+        )
+        if alive_backups and alive_backups[0] is drone:
+            self._promote_relay(drone)
+        else:
+            # Not the designated heir — revert to fast behavior
+            drone._mimicry_active = False
+            drone.drone_type      = "fast"
+            drone.succession_rank = 0
+
+    def _promote_relay(self, drone):
+        """Promote drone to full relay status."""
+        drone._mimicry_active = False
+        drone._is_relay       = True
+        drone.role            = "relay"
+        self.relay            = drone          # swap relay reference
+
+        # Reset pathfinding from the new relay's current position
+        self._relay_path  = []
+        self._path_target = None
+        self._replan_in   = 0
+
+        # Immediately end mimicry for all remaining backups → revert to fast
+        for d in self.drones:
+            if d is not drone and d.alive and d.drone_type == "relay_backup":
+                d._mimicry_active = False
+                d.drone_type      = "fast"
+                d.succession_rank = 0
+
+        # Re-rank any surviving relay_backup drones for future succession
+        new_backups = [d for d in self.drones
+                       if d.alive and d.drone_type == "relay_backup"]
+        for rank, d in enumerate(new_backups, start=1):
+            d.succession_rank = rank
+
+        self._succession_active = False
 
     # ── environment helpers ───────────────────────────────────────────────────
     def _base_pos(self):
