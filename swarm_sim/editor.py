@@ -1,14 +1,17 @@
 import pygame
 import numpy as np
 from . import config
-from .environment import Environment, Wall, Tree, Building, Zone, ZONE_TYPES
+from .environment import (Environment, Wall, Tree, Building, Zone,
+                          Base, Turret, ZONE_TYPES)
 
 SIDEBAR_W = config.EDITOR_SIDEBAR_W
 
 TOOLS = [
     ("W", "Wall"),
     ("T", "Tree"),
-    ("B", "Building"),
+    ("H", "Building"),
+    ("B", "Base"),
+    ("U", "Turret"),
     ("Z", "Zone"),
     ("P", "Waypoint"),
     ("D", "Drag"),
@@ -17,14 +20,14 @@ TOOLS = [
 
 
 class Editor:
-    TOOLS = TOOLS   # exposed so EditorRenderer can iterate
+    TOOLS = TOOLS
 
     def __init__(self, environment=None):
         self.environment  = environment or Environment()
         self.current_tool = "W"
         self.zone_type    = "TARGET"
         self.drag_start   = None
-        self.drag_object  = None   # ("type", index, …)
+        self.drag_object  = None
 
     # ── event router ─────────────────────────────────────────────────────────
     def handle_event(self, event, screen):
@@ -45,8 +48,9 @@ class Editor:
             self._load_prompt(screen); return None
 
         key_map = {
-            pygame.K_w: "W", pygame.K_t: "T", pygame.K_b: "B",
-            pygame.K_z: "Z", pygame.K_p: "P", pygame.K_d: "D",
+            pygame.K_w: "W", pygame.K_t: "T", pygame.K_h: "H",
+            pygame.K_b: "B", pygame.K_u: "U", pygame.K_z: "Z",
+            pygame.K_p: "P", pygame.K_d: "D",
             pygame.K_x: "X", pygame.K_DELETE: "X",
         }
         if event.key in key_map:
@@ -60,18 +64,24 @@ class Editor:
 
     # ── mouse down ───────────────────────────────────────────────────────────
     def _handle_down(self, pos):
-        # sidebar click
         if pos[0] < SIDEBAR_W:
             self._sidebar_click(pos)
             return None
 
         tool = self.current_tool
 
-        if tool in ("W", "B", "Z"):
+        if tool in ("W", "H", "Z"):
             self.drag_start = pos
 
         elif tool == "T":
             self.environment.trees.append(Tree(pos, radius=18))
+
+        elif tool == "B":
+            # Replace any existing base (only one allowed)
+            self.environment.base = Base(pos)
+
+        elif tool == "U":
+            self.environment.turrets.append(Turret(pos))
 
         elif tool == "P":
             self.environment.waypoints.append(tuple(pos))
@@ -97,7 +107,7 @@ class Editor:
                 self.environment.walls.append(Wall(self.drag_start, pos))
             self.drag_start = None
 
-        elif tool == "B" and self.drag_start:
+        elif tool == "H" and self.drag_start:
             sx, sy = self.drag_start
             x, y = min(sx, pos[0]), min(sy, pos[1])
             w, h = abs(pos[0] - sx), abs(pos[1] - sy)
@@ -121,8 +131,7 @@ class Editor:
 
     # ── sidebar click ─────────────────────────────────────────────────────────
     def _sidebar_click(self, pos):
-        # Tool buttons — positions mirror EditorRenderer._draw_sidebar layout
-        y = 10 + 22 + 8 + 16   # after title + divider + section label
+        y = 10 + 22 + 8 + 16
         for key, label in TOOLS:
             rect = pygame.Rect(6, y, SIDEBAR_W - 12, 26)
             if rect.collidepoint(pos):
@@ -130,7 +139,6 @@ class Editor:
                 return
             y += 30
 
-        # Zone type buttons (only if Z active)
         if self.current_tool == "Z":
             y += 4 + 8 + 16
             for zt in ZONE_TYPES:
@@ -144,6 +152,14 @@ class Editor:
     def _find_object(self, pos):
         pv = np.array(pos, dtype=float)
 
+        if self.environment.base is not None:
+            if np.linalg.norm(pv - self.environment.base.position) < 16:
+                return ("base",)
+
+        for i, t in enumerate(self.environment.turrets):
+            if np.linalg.norm(pv - t.position) < 14:
+                return ("turret", i)
+
         for i, wp in enumerate(self.environment.waypoints):
             if np.linalg.norm(pv - np.array(wp)) < 14:
                 return ("wp", i)
@@ -155,7 +171,7 @@ class Editor:
         for i, w in enumerate(self.environment.walls):
             for j, ep in enumerate([w.start, w.end]):
                 if np.linalg.norm(pv - ep) < 12:
-                    return ("wall_ep", i, j)  # j=0 start, j=1 end
+                    return ("wall_ep", i, j)
 
         for i, b in enumerate(self.environment.buildings):
             if b.contains(pos):
@@ -184,10 +200,23 @@ class Editor:
             x, y, w, h = bld.rect
             dx, dy = pos[0] - ox, pos[1] - oy
             bld.rect = (x + dx, y + dy, w, h)
+        elif kind == "base":
+            self.environment.base.position = np.array(pos, dtype=float)
+        elif kind == "turret":
+            self.environment.turrets[obj[1]].position = np.array(pos, dtype=float)
 
     # ── delete ───────────────────────────────────────────────────────────────
     def _delete_at(self, pos):
         pv = np.array(pos, dtype=float)
+
+        if self.environment.base is not None:
+            if np.linalg.norm(pv - self.environment.base.position) < 16:
+                self.environment.base = None
+                return
+
+        for i, t in enumerate(self.environment.turrets):
+            if np.linalg.norm(pv - t.position) < 14:
+                self.environment.turrets.pop(i); return
 
         for i, wp in enumerate(self.environment.waypoints):
             if np.linalg.norm(pv - np.array(wp)) < 14:
@@ -212,12 +241,12 @@ class Editor:
 
     # ── file prompts ──────────────────────────────────────────────────────────
     def _save_prompt(self, screen):
-        name = _text_prompt(screen, "Save as (no extension): ")
+        name = text_prompt(screen, "Save as (no extension): ")
         if name:
             self.environment.save(f"environments/{name}.json")
 
     def _load_prompt(self, screen):
-        name = _text_prompt(screen, "Load file (no extension): ")
+        name = text_prompt(screen, "Load file (no extension): ")
         if name:
             try:
                 self.environment.load(f"environments/{name}.json")
@@ -225,7 +254,7 @@ class Editor:
                 pass
 
 
-def _text_prompt(screen, prompt):
+def text_prompt(screen, prompt):
     font   = pygame.font.SysFont("monospace", 18)
     text   = ""
     w, h   = screen.get_size()
@@ -254,3 +283,7 @@ def _text_prompt(screen, prompt):
         screen.blit(label, (box.x + 8, box.y + 10))
         pygame.display.flip()
         clock.tick(30)
+
+
+# backwards-compat alias
+_text_prompt = text_prompt
