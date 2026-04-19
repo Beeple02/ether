@@ -51,7 +51,29 @@ FORCE_SCALE   = 55   # pixels per unit of force
 SIDEBAR_W     = config.EDITOR_SIDEBAR_W
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── shape helpers ─────────────────────────────────────────────────────────────
+def _draw_diamond(surface, color, center, size):
+    x, y = int(center[0]), int(center[1])
+    pts = [(x, y - size), (x + size, y), (x, y + size), (x - size, y)]
+    pygame.draw.polygon(surface, color, pts)
+
+
+def _draw_triangle(surface, color, center, size, velocity=None):
+    x, y = int(center[0]), int(center[1])
+    if velocity is not None and np.linalg.norm(velocity) > 0.1:
+        angle = np.arctan2(velocity[1], velocity[0])
+    else:
+        angle = -np.pi / 2
+    tip = (x + np.cos(angle) * size,              y + np.sin(angle) * size)
+    lft = (x + np.cos(angle + 2.3) * size * 0.75, y + np.sin(angle + 2.3) * size * 0.75)
+    rgt = (x + np.cos(angle - 2.3) * size * 0.75, y + np.sin(angle - 2.3) * size * 0.75)
+    pygame.draw.polygon(surface, color,
+                        [(int(tip[0]), int(tip[1])),
+                         (int(lft[0]), int(lft[1])),
+                         (int(rgt[0]), int(rgt[1]))])
+
+
+# ── arrow helper ──────────────────────────────────────────────────────────────
 def _arrow(surface, color, start, end, width=1):
     sx, sy = int(start[0]), int(start[1])
     ex, ey = int(end[0]), int(end[1])
@@ -99,6 +121,7 @@ class Renderer:
         self._draw_drones()
         self._draw_relay()
         self._draw_hud(fps, paused)
+        self._draw_type_legend()
         if self.debug_mode:
             self._draw_debug_legend()
 
@@ -168,8 +191,18 @@ class Renderer:
 
     def _draw_drones(self):
         for d in self.swarm.drones:
-            if d.alive:
-                pygame.draw.circle(self._screen, C_DRONE, d.position.astype(int), 4)
+            if not d.alive:
+                continue
+            color = d.type_color
+            size  = d.type_size
+            pos   = d.position
+            af    = d.airframe
+            if af == "medium":
+                _draw_diamond(self._screen, color, pos, size)
+            elif af == "large":
+                _draw_triangle(self._screen, color, pos, size, d.velocity)
+            else:
+                pygame.draw.circle(self._screen, color, (int(pos[0]), int(pos[1])), size)
 
     def _draw_relay(self):
         rp = self.swarm.relay.position.astype(int)
@@ -287,6 +320,49 @@ class Renderer:
             pygame.draw.line(self._screen, col[:3], (x0, y+6), (x0+18, y+6), 2)
             self._screen.blit(self._font_sm.render(label, True, C_HUD_LABEL), (x0+22, y))
             y += 17
+
+    # ── type legend ───────────────────────────────────────────────────────────
+    def _draw_type_legend(self):
+        alive_counts = {}
+        for d in self.swarm.drones:
+            if d.alive and d.drone_type:
+                alive_counts[d.drone_type] = alive_counts.get(d.drone_type, 0) + 1
+
+        W, H  = config.WORLD_SIZE
+        lh    = 16
+        pad   = 6
+        pw    = 172
+        ph    = pad * 2 + (len(config.DRONE_TYPES) + 1) * lh
+        x0    = W - pw - 6
+        y0    = H - ph - 18
+
+        pnl = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        pnl.fill(C_HUD_BG)
+        self._screen.blit(pnl, (x0, y0))
+        pygame.draw.rect(self._screen, C_HUD_BDR, (x0, y0, pw, ph), 1)
+
+        hdr = self._font_sm.render("TYPE          CNT", True, C_HUD_BDR)
+        self._screen.blit(hdr, (x0 + 22, y0 + pad))
+
+        y = y0 + pad + lh
+        for dt, info in config.DRONE_TYPES.items():
+            color = info["color"]
+            af    = info["airframe"]
+            sz    = min(info["size"], 5)
+            count = alive_counts.get(dt, 0)
+            cx, cy = x0 + 11, y + lh // 2
+
+            if af == "medium":
+                _draw_diamond(self._screen, color, (cx, cy), sz)
+            elif af == "large":
+                _draw_triangle(self._screen, color, (cx, cy), sz)
+            else:
+                pygame.draw.circle(self._screen, color, (cx, cy), sz)
+
+            label_col = color if count else C_HUD_BDR
+            row = f"{dt:<14} {count:3d}"
+            self._screen.blit(self._font_sm.render(row, True, label_col), (x0 + 20, y + 2))
+            y += lh
 
     # ── HUD ──────────────────────────────────────────────────────────────────
     def _draw_hud(self, fps, paused):
