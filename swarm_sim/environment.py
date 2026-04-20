@@ -147,14 +147,15 @@ class Projectile:
 
 class Environment:
     def __init__(self):
-        self.walls      = []
-        self.trees      = []
-        self.buildings  = []
-        self.zones      = []
-        self.waypoints  = []
-        self.base       = None
-        self.turrets    = []
-        self.enemy_base = None
+        self.walls             = []
+        self.trees             = []
+        self.buildings         = []
+        self.zones             = []
+        self.waypoints         = []
+        self.base              = None
+        self.turrets           = []
+        self.enemy_base        = None
+        self.enemy_swarm_config = None  # per-scenario override; None → use config defaults
 
     def repulsion_force(self, pos):
         import swarm_sim.config as cfg
@@ -231,7 +232,8 @@ class Environment:
             "waypoints":  [list(p)     for p in self.waypoints],
             "base":       self.base.to_dict()       if self.base       else None,
             "turrets":    [t.to_dict() for t in self.turrets],
-            "enemy_base": self.enemy_base.to_dict() if self.enemy_base else None,
+            "enemy_base":        self.enemy_base.to_dict() if self.enemy_base else None,
+            "enemy_swarm":       self.enemy_swarm_config,
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
@@ -246,6 +248,7 @@ class Environment:
         self.waypoints  = [tuple(p)               for p in data.get("waypoints",  [])]
         b_data          = data.get("base")
         self.base       = Base.from_dict(b_data)          if b_data else None
-        eb_data         = data.get("enemy_base")
-        self.enemy_base = EnemyBase.from_dict(eb_data)    if eb_data else None
-        self.turrets    = [Turret.from_dict(t)    for t in data.get("turrets",    [])]
+        eb_data               = data.get("enemy_base")
+        self.enemy_base       = EnemyBase.from_dict(eb_data) if eb_data else None
+        self.enemy_swarm_config = data.get("enemy_swarm")   # None if not present
+        self.turrets          = [Turret.from_dict(t) for t in data.get("turrets", [])]

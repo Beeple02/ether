@@ -443,13 +443,18 @@ class Agent:
                    if d.alive and d.drone_type == "relay_backup"]
 
         if self.drone_type == "hunter":
-            tgt = relay_pos
-            if tgt is None and backups:
-                tgt = backups[0].position
-            if tgt is None and player_drones:
+            tgt = None
+            if context.get("relay_alive", True) and relay_pos is not None:
+                tgt = relay_pos
+            elif backups:
+                # target backup drones in succession order (rank 1 is most valuable)
+                ordered = sorted(backups, key=lambda b: b.succession_rank)
+                tgt = ordered[0].position
+            else:
                 alive_p = [d for d in player_drones if d.alive]
                 if alive_p:
-                    tgt = alive_p[0].position
+                    tgt = min(alive_p,
+                              key=lambda d: np.linalg.norm(d.position - self.position)).position
             if tgt is not None:
                 self._move_toward(tgt, environment)
 

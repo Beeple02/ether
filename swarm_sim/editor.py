@@ -2,7 +2,7 @@ import pygame
 import numpy as np
 from . import config
 from .environment import (Environment, Wall, Tree, Building, Zone,
-                          Base, Turret, ZONE_TYPES)
+                          Base, Turret, EnemyBase, ZONE_TYPES)
 
 SIDEBAR_W = config.EDITOR_SIDEBAR_W
 
@@ -12,6 +12,7 @@ TOOLS = [
     ("H", "Building"),
     ("B", "Base"),
     ("U", "Turret"),
+    ("N", "Enemy Base"),
     ("Z", "Zone"),
     ("P", "Waypoint"),
     ("D", "Drag"),
@@ -49,8 +50,8 @@ class Editor:
 
         key_map = {
             pygame.K_w: "W", pygame.K_t: "T", pygame.K_h: "H",
-            pygame.K_b: "B", pygame.K_u: "U", pygame.K_z: "Z",
-            pygame.K_p: "P", pygame.K_d: "D",
+            pygame.K_b: "B", pygame.K_u: "U", pygame.K_n: "N",
+            pygame.K_z: "Z", pygame.K_p: "P", pygame.K_d: "D",
             pygame.K_x: "X", pygame.K_DELETE: "X",
         }
         if event.key in key_map:
@@ -82,6 +83,9 @@ class Editor:
 
         elif tool == "U":
             self.environment.turrets.append(Turret(pos))
+
+        elif tool == "N":
+            self.environment.enemy_base = EnemyBase(pos)
 
         elif tool == "P":
             self.environment.waypoints.append(tuple(pos))
@@ -156,6 +160,10 @@ class Editor:
             if np.linalg.norm(pv - self.environment.base.position) < 16:
                 return ("base",)
 
+        if self.environment.enemy_base is not None:
+            if np.linalg.norm(pv - self.environment.enemy_base.position) < 16:
+                return ("enemy_base",)
+
         for i, t in enumerate(self.environment.turrets):
             if np.linalg.norm(pv - t.position) < 14:
                 return ("turret", i)
@@ -202,6 +210,8 @@ class Editor:
             bld.rect = (x + dx, y + dy, w, h)
         elif kind == "base":
             self.environment.base.position = np.array(pos, dtype=float)
+        elif kind == "enemy_base":
+            self.environment.enemy_base.position = np.array(pos, dtype=float)
         elif kind == "turret":
             self.environment.turrets[obj[1]].position = np.array(pos, dtype=float)
 
@@ -212,6 +222,11 @@ class Editor:
         if self.environment.base is not None:
             if np.linalg.norm(pv - self.environment.base.position) < 16:
                 self.environment.base = None
+                return
+
+        if self.environment.enemy_base is not None:
+            if np.linalg.norm(pv - self.environment.enemy_base.position) < 16:
+                self.environment.enemy_base = None
                 return
 
         for i, t in enumerate(self.environment.turrets):

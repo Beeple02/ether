@@ -78,6 +78,17 @@ def _draw_triangle(surface, color, center, size, velocity=None):
                          (int(rgt[0]), int(rgt[1]))])
 
 
+# ── pentagon helper ───────────────────────────────────────────────────────────
+def _draw_pentagon(surface, color, center, size, width=0):
+    x, y = int(center[0]), int(center[1])
+    pts = [
+        (int(x + np.cos(-np.pi / 2 + 2 * np.pi * i / 5) * size),
+         int(y + np.sin(-np.pi / 2 + 2 * np.pi * i / 5) * size))
+        for i in range(5)
+    ]
+    pygame.draw.polygon(surface, color, pts, width)
+
+
 # ── arrow helper ──────────────────────────────────────────────────────────────
 def _arrow(surface, color, start, end, width=1):
     sx, sy = int(start[0]), int(start[1])
@@ -141,6 +152,7 @@ class Renderer:
         for i, wp in enumerate(env.waypoints):
             self._waypoint(wp, i + 1)
         for t in env.turrets:   self._turret(t)
+        if env.enemy_base:      self._enemy_base(env.enemy_base)
 
     def _zone(self, zone):
         x, y, w, h = (int(v) for v in zone.rect)
@@ -207,6 +219,14 @@ class Renderer:
             pygame.draw.line(self._screen, (120, 60, 220), (pos[0]-4, pos[1]-4), (pos[0]+4, pos[1]+4), 1)
             pygame.draw.line(self._screen, (120, 60, 220), (pos[0]+4, pos[1]-4), (pos[0]-4, pos[1]+4), 1)
 
+    def _enemy_base(self, eb):
+        pos = eb.position
+        ipos = (int(pos[0]), int(pos[1]))
+        _draw_pentagon(self._screen, (150, 25, 25), pos, 13)
+        _draw_pentagon(self._screen, (255, 60, 60), pos, 13, width=2)
+        txt = self._font_sm.render("ENEMY BASE", True, (255, 80, 80))
+        self._screen.blit(txt, (ipos[0] - txt.get_width() // 2, ipos[1] + 17))
+
     # ── agents ────────────────────────────────────────────────────────────────
     def _draw_relay_lines(self):
         rp = self.swarm.relay.position
@@ -216,7 +236,8 @@ class Renderer:
                                  d.position.astype(int), rp.astype(int), 1)
 
     def _draw_drones(self):
-        for d in self.swarm.drones:
+        all_drones = list(self.swarm.drones) + list(self.swarm.enemy_drones)
+        for d in all_drones:
             if not d.alive:
                 continue
             if d._is_relay:
@@ -539,8 +560,17 @@ class EditorRenderer:
         for w in env.walls:     self._wall(w)
         for i, wp in enumerate(env.waypoints):
             self._waypoint(wp, i + 1)
+        if env.enemy_base:      self._enemy_base(env.enemy_base)
         self._drag_preview()
         self._sidebar()
+
+    def _enemy_base(self, eb):
+        pos  = eb.position
+        ipos = (int(pos[0]), int(pos[1]))
+        _draw_pentagon(self._screen, (150, 25, 25), pos, 13)
+        _draw_pentagon(self._screen, (255, 60, 60), pos, 13, width=2)
+        txt = self._font_sm.render("ENEMY BASE", True, (255, 80, 80))
+        self._screen.blit(txt, (ipos[0] - txt.get_width() // 2, ipos[1] + 17))
 
     def _draw_grid(self):
         w, h = config.WORLD_SIZE

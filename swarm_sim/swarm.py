@@ -88,6 +88,17 @@ class Swarm:
         self._succession_active = False   # True while mimicry window is open
         self._last_threats      = []      # RECON reports from last tick (for renderer)
 
+        # enemy counter-swarm
+        self.enemy_drones       = []
+        self._enemy_spawned     = False
+        self._enemy_spawn_timer = 0.0
+        env_cfg = (self._environment.enemy_swarm_config
+                   if self._environment and self._environment.enemy_swarm_config else None)
+        self._enemy_size        = env_cfg["size"]        if env_cfg else config.ENEMY_SWARM_SIZE
+        self._enemy_composition = env_cfg["composition"] if env_cfg else config.ENEMY_SWARM_COMPOSITION
+        self._enemy_delay       = (env_cfg["spawn_delay_seconds"]
+                                   if env_cfg else config.ENEMY_SPAWN_DELAY)
+
         # assign per-FAST convergence angles
         fast_drones = [d for d in self.drones if d.drone_type == "fast"]
         for k, d in enumerate(fast_drones):
@@ -133,6 +144,7 @@ class Swarm:
         self._update_relay()
         self._update_signals()
         self._update_noflyzone()
+        self._update_enemy_spawn(dt)
 
         # Exclude promoted drones (_is_relay) from the flock loop — they are
         # moved by _update_relay() and drawn via _draw_relay(), not as drones.
@@ -170,7 +182,8 @@ class Swarm:
             "relay_vel":           self.relay.velocity.copy(),
             "turrets":             env.turrets if env else [],
             "projectiles":         self.projectiles,
-            "enemy_drones":        [],
+            "enemy_drones":        [d for d in self.enemy_drones if d.alive],
+            "relay_alive":         self.relay.alive,
             "player_drones":       self.drones,
             "all_agents":          all_agents,
             "target_center":       target_center,
@@ -192,11 +205,30 @@ class Swarm:
             ft = self._formation_target(drone, i, n_alive, int_idx, n_interceptors)
             drone.tick(self._neighbors(drone, alive), ft, env, context=ctx)
 
+        # tick enemy drones — no formation target, no boids neighbors
+        for ed in ctx["enemy_drones"]:
+            ed.tick([], None, env, context=ctx)
+
         self._process_events(ctx["events"])
         self._process_threat_reports(ctx["threats"])
         self._last_threats = ctx["threats"]
         self._update_threats()
         self._check_end_conditions()
+
+    # ── enemy spawn ───────────────────────────────────────────────────────────
+    def _update_enemy_spawn(self, dt):
+        env = self._environment
+        if not env or env.enemy_base is None or self._enemy_spawned:
+            return
+        self._enemy_spawn_timer += dt
+        if self._enemy_spawn_timer >= self._enemy_delay:
+            self._enemy_spawned = True
+            origin = env.enemy_base.position
+            self.enemy_drones = [
+                Agent(origin + np.random.uniform(-20, 20, 2),
+                      role="drone", drone_type=dt, side="enemy")
+                for dt in _spawn_types(self._enemy_size, self._enemy_composition)
+            ]
 
     # ── signal ────────────────────────────────────────────────────────────────
     def _update_signals(self):
