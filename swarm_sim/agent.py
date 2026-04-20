@@ -166,7 +166,12 @@ class Agent:
         if relay_pos is None:
             return False
 
-        heading = normalize(relay_vel) if np.linalg.norm(relay_vel) > 0.1 else np.array([0, -1.0])
+        if np.linalg.norm(relay_vel) > 0.1:
+            heading = normalize(relay_vel)
+        else:
+            tc = context.get("target_center")
+            heading = (normalize(np.array(tc, dtype=float) - relay_pos)
+                       if tc is not None else np.array([0.0, -1.0]))
         target_pos = relay_pos + heading * config.EMP_LEAD_DIST
 
         if self._emp_stage == "attached":

@@ -381,10 +381,9 @@ class Swarm:
                     for t in env.turrets:
                         if np.linalg.norm(t.position - pos) <= radius:
                             t._disabled_timer = config.EMP_DISABLE_TIME
-                for d in self.drones:
-                    if d.alive and d.side == "enemy":
-                        if np.linalg.norm(d.position - pos) <= radius:
-                            d._stun_timer = config.EMP_STUN_TIME
+                for d in self.enemy_drones:
+                    if d.alive and np.linalg.norm(d.position - pos) <= radius:
+                        d._stun_timer = config.EMP_STUN_TIME
 
             elif etype == "smoke_deploy":
                 self.effects.append(SmokeCloud(

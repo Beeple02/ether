@@ -260,6 +260,16 @@ class Renderer:
             else:
                 pygame.draw.circle(self._screen, color, ipos, size)
 
+            # EMP arming pulse — expanding purple ring grows over 3 s charge window
+            if d.drone_type == "emp" and getattr(d, "_emp_stage", None) == "arming":
+                t_frac  = min(1.0, d._emp_arming_t / config.EMP_ARMING_DELAY)
+                ring_r  = int(8 + t_frac * 14)
+                ring_a  = int(80 + t_frac * 160)
+                rsurf   = pygame.Surface((ring_r * 2 + 4, ring_r * 2 + 4), pygame.SRCALPHA)
+                pygame.draw.circle(rsurf, (175, 70, 220, ring_a),
+                                   (ring_r + 2, ring_r + 2), ring_r, 2)
+                self._screen.blit(rsurf, (ipos[0] - ring_r - 2, ipos[1] - ring_r - 2))
+
     def _draw_relay(self):
         rp = self.swarm.relay.position.astype(int)
         pygame.draw.circle(self._screen, C_RELAY_RING, rp, 12)
