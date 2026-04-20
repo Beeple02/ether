@@ -14,7 +14,7 @@ def handle_events(swarm, renderer, ed_renderer, editor, state):
 
         if state["editor_mode"]:
             result = editor.handle_event(event, pygame.display.get_surface())
-            if result == "exit_editor":
+            if result in ("exit_editor", "scenario_loaded"):
                 state["editor_mode"] = False
                 env = editor.environment
                 swarm.set_environment(env)

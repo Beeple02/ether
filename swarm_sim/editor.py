@@ -42,7 +42,15 @@ class Editor:
 
     # ── keyboard ─────────────────────────────────────────────────────────────
     def _handle_key(self, event, screen):
-        ctrl = pygame.key.get_mods() & pygame.KMOD_CTRL
+        ctrl  = pygame.key.get_mods() & pygame.KMOD_CTRL
+        shift = pygame.key.get_mods() & pygame.KMOD_SHIFT
+
+        # Scenario save/load (Ctrl+Shift) checked before plain Ctrl binds
+        if ctrl and shift and event.key == pygame.K_s:
+            self._save_scenario_prompt(screen); return None
+        if ctrl and shift and event.key == pygame.K_o:
+            return self._load_scenario_prompt(screen)
+
         if ctrl and event.key == pygame.K_s:
             self._save_prompt(screen); return None
         if ctrl and event.key == pygame.K_o:
@@ -254,7 +262,33 @@ class Editor:
             if z.contains(pos):
                 self.environment.zones.pop(i); return
 
-    # ── file prompts ──────────────────────────────────────────────────────────
+    # ── scenario file prompts ─────────────────────────────────────────────────
+    def _save_scenario_prompt(self, screen):
+        from .scenario import Scenario
+        name = text_prompt(screen, "Save scenario (no ext): ")
+        if not name:
+            return
+        env_path = f"environments/{name}.json"
+        self.environment.save(env_path)
+        s = Scenario.from_environment(self.environment, env_path)
+        s.save(f"scenarios/{name}.json")
+
+    def _load_scenario_prompt(self, screen):
+        from .scenario import Scenario
+        name = text_prompt(screen, "Load scenario (no ext): ")
+        if not name:
+            return None
+        try:
+            s = Scenario.load(f"scenarios/{name}.json")
+            s.apply_config()
+            env = s.load_environment()
+            if env:
+                self.environment = env
+            return "scenario_loaded"
+        except FileNotFoundError:
+            return None
+
+    # ── environment file prompts ──────────────────────────────────────────────
     def _save_prompt(self, screen):
         name = text_prompt(screen, "Save as (no extension): ")
         if name:

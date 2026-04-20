@@ -680,8 +680,10 @@ class Renderer:
                 ("[D]",      "Drag object"),
                 ("[X] / Del","Delete"),
                 ("[G]",      "Toggle grid"),
-                ("[Ctrl+S]", "Save environment"),
-                ("[Ctrl+O]", "Load environment"),
+                ("[Ctrl+S]",   "Save environment"),
+                ("[Ctrl+O]",   "Load environment"),
+                ("[C+S+S]",    "Save scenario"),
+                ("[C+S+O]",    "Load scenario"),
             ]),
             ("DEBUG", [
                 ("[TAB]",  "Toggle debug overlay"),
@@ -953,9 +955,10 @@ class EditorRenderer:
         y += 6
         pygame.draw.line(self._screen, C_SECTION, (6, y), (sw-6, y)); y += 8
         self._slabel("ACTIONS", y); y += 16
-        for key, lbl in [("[G]","Grid"), ("^S","Save"), ("^O","Load"), ("[E]","Exit")]:
+        for key, lbl in [("[G]","Grid"), ("^S","Env Save"), ("^O","Env Load"),
+                         ("^⇧S","Scen Save"), ("^⇧O","Scen Load"), ("[E]","Exit")]:
             self._screen.blit(self._font_sm.render(key, True, C_BTN_KEY),  (10, y))
-            self._screen.blit(self._font_sm.render(lbl, True, C_COUNT),    (42, y))
+            self._screen.blit(self._font_sm.render(lbl, True, C_COUNT),    (48, y))
             y += 16
 
     def _slabel(self, text, y):
