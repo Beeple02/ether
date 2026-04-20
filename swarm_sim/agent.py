@@ -225,26 +225,33 @@ class Agent:
         tgt = relay_pos + heading * config.RECON_LEAD_DIST
         self._move_toward(tgt, environment)
 
-        # scan for threats
-        threats = context.setdefault("threats", [])
-        turrets  = context.get("turrets", [])
+        # scan for threats; smoke clouds on the RECON→target line halve effective range
+        threats      = context.setdefault("threats", [])
+        smoke_clouds = context.get("smoke_clouds", [])
+
+        turrets = context.get("turrets", [])
         for t in turrets:
-            d = np.linalg.norm(t.position - self.position)
-            if d < config.RECON_RANGE:
+            d    = float(np.linalg.norm(t.position - self.position))
+            eff  = (config.RECON_RANGE / 2
+                    if any(_near_segment(sc.position, self.position, t.position, sc.radius)
+                           for sc in smoke_clouds)
+                    else config.RECON_RANGE)
+            if d < eff:
                 threats.append({"kind": "TURRET_THREAT", "pos": t.position.copy(), "obj": t})
 
-        projectiles = context.get("projectiles", [])
-        for p in projectiles:
-            if relay_pos is not None:
-                d = np.linalg.norm(p.position - relay_pos)
-                if d < config.RECON_PROJ_ALERT:
-                    threats.append({"kind": "PROJECTILE_THREAT", "pos": p.position.copy(), "obj": p})
+        # projectile proximity is relay-centric (not blocked by smoke — already heading in)
+        for p in context.get("projectiles", []):
+            if np.linalg.norm(p.position - relay_pos) < config.RECON_PROJ_ALERT:
+                threats.append({"kind": "PROJECTILE_THREAT", "pos": p.position.copy(), "obj": p})
 
-        enemy_drones = context.get("enemy_drones", [])
-        for e in enemy_drones:
+        for e in context.get("enemy_drones", []):
             if e.alive:
-                d = np.linalg.norm(e.position - self.position)
-                if d < config.RECON_RANGE:
+                d   = float(np.linalg.norm(e.position - self.position))
+                eff = (config.RECON_RANGE / 2
+                       if any(_near_segment(sc.position, self.position, e.position, sc.radius)
+                              for sc in smoke_clouds)
+                       else config.RECON_RANGE)
+                if d < eff:
                     threats.append({"kind": "DRONE_THREAT", "pos": e.position.copy(), "obj": e})
 
         return True
@@ -264,16 +271,24 @@ class Agent:
 
     # SMOKESCREEN ──────────────────────────────────────────────────────────────
     def _tick_smokescreen(self, context, environment, dt, neighbors, formation_target):
+        relay_pos = context.get("relay_pos")
+
         if self._smoke_charges <= 0:
-            return False
-        relay_pos    = context.get("relay_pos")
-        projectiles  = context.get("projectiles", [])
+            # Depleted — no more payload. Cluster near relay as a non-combat unit
+            # regardless of current formation mode (spec: fall back to DENSE).
+            if relay_pos is not None:
+                self._apply_boids(neighbors, relay_pos, environment)
+            return True
+
         if relay_pos is None:
             return False
-        for p in projectiles:
+
+        # Local autonomous detection: no relay command needed.
+        # Any projectile within SMOKESCREEN_RANGE heading toward relay → interpose.
+        for p in context.get("projectiles", []):
             to_relay = relay_pos - p.position
             if np.dot(p.velocity, to_relay) > 0:
-                d = np.linalg.norm(to_relay)
+                d = float(np.linalg.norm(to_relay))
                 if d < config.SMOKESCREEN_RANGE:
                     interpose = p.position + normalize(to_relay) * (d * 0.5)
                     self._move_toward(interpose, environment)
@@ -281,10 +296,11 @@ class Agent:
                         self._smoke_charges -= 1
                         self._smoke_cd = config.SMOKESCREEN_CD
                         context.setdefault("events", []).append({
-                            "type": "smoke_deploy",
+                            "type":     "smoke_deploy",
                             "position": self.position.copy(),
                         })
                     return True
+        # No threat detected — relay coordinates idle position via formation_target
         return False
 
     # DECOY ────────────────────────────────────────────────────────────────────
@@ -587,6 +603,18 @@ class Agent:
 def _is_iff_safe(agent, target):
     """Return True if target is friendly (same side) — never engage."""
     return target.side == agent.side
+
+
+def _near_segment(point, seg_a, seg_b, radius):
+    """True if *point* is within *radius* of line segment seg_a→seg_b.
+    Used to check whether a smoke cloud obscures a RECON scan line."""
+    ab  = seg_b - seg_a
+    ab2 = float(np.dot(ab, ab))
+    if ab2 < 1e-8:
+        return float(np.linalg.norm(point - seg_a)) < radius
+    t       = float(np.clip(np.dot(point - seg_a, ab) / ab2, 0.0, 1.0))
+    closest = seg_a + t * ab
+    return float(np.linalg.norm(point - closest)) < radius
 
 
 def pygame_time():

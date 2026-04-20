@@ -175,6 +175,8 @@ class Swarm:
             "all_agents":          all_agents,
             "target_center":       target_center,
             "target_radius":       120.0,
+            "smoke_clouds":        [fx for fx in self.effects
+                                    if isinstance(fx, SmokeCloud) and fx.alive],
             "threats":             [],
             "events":              [],
             "n_interceptors":      n_interceptors,
