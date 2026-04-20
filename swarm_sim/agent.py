@@ -616,7 +616,7 @@ class Agent:
             self.velocity += f_geo
             self.active_reflexes.add("GEOFENCE")
 
-        # COLLISION_AVOID
+        # COLLISION_AVOID — constant maximum push (not proportional) when below safe dist
         all_agents = context.get("all_agents", [])
         for other in all_agents:
             if other is self or not other.alive:
@@ -624,8 +624,34 @@ class Agent:
             diff = self.position - other.position
             d    = np.linalg.norm(diff)
             if d < config.MIN_SAFE_DISTANCE and d > 1e-4:
-                self.velocity += normalize(diff) * (config.MIN_SAFE_DISTANCE - d) * 0.5
+                self.velocity += normalize(diff) * config.MAX_SPEED
                 self.active_reflexes.add("COLLISION_AVOID")
+
+        # IFF_SAFE — interceptors: flag when a friendly agent is within engagement range
+        if self.drone_type in ("interceptor_net", "interceptor_fuse"):
+            engage_r = (config.INTERCEPTOR_NET_RANGE if self.drone_type == "interceptor_net"
+                        else config.INTERCEPTOR_FUSE_RANGE) * 2.0
+            for other in all_agents:
+                if other is self or not other.alive:
+                    continue
+                if getattr(other, "side", None) == getattr(self, "side", None):
+                    if np.linalg.norm(other.position - self.position) < engage_r:
+                        self.active_reflexes.add("IFF_SAFE")
+                        break
+
+        # RELAY_SAFE — interceptors: flag when relay or relay_backup is within perception
+        if self.drone_type in ("interceptor_net", "interceptor_fuse"):
+            relay_pos    = context.get("relay_pos")
+            player_drones = context.get("player_drones", [])
+            if relay_pos is not None:
+                if np.linalg.norm(relay_pos - self.position) < config.PERCEPTION_RADIUS:
+                    self.active_reflexes.add("RELAY_SAFE")
+            if "RELAY_SAFE" not in self.active_reflexes:
+                for other in player_drones:
+                    if other.alive and other.drone_type == "relay_backup":
+                        if np.linalg.norm(other.position - self.position) < config.PERCEPTION_RADIUS:
+                            self.active_reflexes.add("RELAY_SAFE")
+                            break
 
         self.velocity = limit(self.velocity, config.MAX_SPEED * self.speed_mult)
         self.position = euler_integrate(self.position, self.velocity)

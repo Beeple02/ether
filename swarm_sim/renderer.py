@@ -418,6 +418,21 @@ class Renderer:
             txt = self._font_sm.render(label, True, col)
             self._screen.blit(txt, (ipos[0] - txt.get_width() // 2, ipos[1] - 22))
 
+        # ── reflex indicator dots (per-drone, per-active rule) ──
+        _REFLEX_DOT = {
+            "COLLISION_AVOID": ((255, 120,  30), (-5, -8)),
+            "GEOFENCE":        ((255, 220,  40), ( 5, -8)),
+            "IFF_SAFE":        (( 40, 210, 210), (-5,  8)),
+            "RELAY_SAFE":      (( 80, 220,  80), ( 5,  8)),
+        }
+        for drone in alive:
+            if not drone.active_reflexes:
+                continue
+            pos = drone.position.astype(int)
+            for rule, (col, (ox, oy)) in _REFLEX_DOT.items():
+                if rule in drone.active_reflexes:
+                    pygame.draw.circle(self._screen, col, (pos[0] + ox, pos[1] + oy), 3)
+
         # relay velocity
         rp  = self.swarm.relay.position.astype(int)
         rv  = self.swarm.relay.velocity
@@ -439,10 +454,14 @@ class Renderer:
             ((255,255, 60), "Path next node"),
             ((150,255,150), "Drone follow target"),
             ((200, 50, 50), "Blocked grid cell"),
-            (DC_RECON_SCAN, "RECON scan radius"),
-            (DC_THREAT_T,   "TURRET_THREAT"),
-            (DC_THREAT_P,   "PROJECTILE_THREAT"),
-            (DC_THREAT_D,   "DRONE_THREAT"),
+            (DC_RECON_SCAN,    "RECON scan radius"),
+            (DC_THREAT_T,      "TURRET_THREAT"),
+            (DC_THREAT_P,      "PROJECTILE_THREAT"),
+            (DC_THREAT_D,      "DRONE_THREAT"),
+            ((255, 120,  30),  "Reflex: COLLISION_AVOID"),
+            ((255, 220,  40),  "Reflex: GEOFENCE"),
+            (( 40, 210, 210),  "Reflex: IFF_SAFE"),
+            (( 80, 220,  80),  "Reflex: RELAY_SAFE"),
         ]
         x0 = config.WORLD_SIZE[0] - 200
         y0 = 8
