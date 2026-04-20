@@ -9,29 +9,50 @@ from .mission import MissionFSM, FormationFSM
 from .effects import EMPBlast, SmokeCloud, NetDeploy, Explosion
 
 
+_PHASE_ORDER = {p: i for i, p in enumerate(
+    ["TRANSIT", "SUPPRESSION", "SATURATION", "PROSECUTION", "PERSISTENCE"]
+)}
+
+
 class RunStats:
     """Per-run metrics tracker."""
     def __init__(self):
-        self.start_time           = time.time()
-        self.time_elapsed         = 0.0
-        self.drones_total         = 0
-        self.drones_survived      = 0
-        self.relay_survived       = True
-        self.target_reached       = False
-        self.peak_signal_coverage = 0.0
-        self.ended                = False
-        self.end_reason           = ""
+        self.start_time                = time.time()
+        self.time_elapsed              = 0.0
+        self.drones_total              = 0
+        self.drones_survived           = 0
+        self.relay_survived            = True
+        self.target_reached            = False
+        self.peak_signal_coverage      = 0.0
+        self.ended                     = False
+        self.end_reason                = ""
+        # extended metrics
+        self.phase_reached             = "TRANSIT"
+        self.relay_successions         = 0
+        self.intercepted_projectiles   = 0
+        self.intercepted_enemy_drones  = 0
+        self.emp_turrets_disabled      = 0
+        self.smokescreen_deployments   = 0
+        self.convergence_used          = False
+        self.enemy_swarm_eliminated    = False
 
-    def finalise(self, relay_alive, alive_count, total, target_reached, reason):
+    def update_phase(self, phase):
+        if _PHASE_ORDER.get(phase, -1) > _PHASE_ORDER.get(self.phase_reached, -1):
+            self.phase_reached = phase
+
+    def finalise(self, relay_alive, alive_count, total, target_reached, reason,
+                 convergence_used=False, enemy_swarm_eliminated=False):
         if self.ended:
             return
-        self.ended           = True
-        self.time_elapsed    = time.time() - self.start_time
-        self.drones_total    = total
-        self.drones_survived = alive_count
-        self.relay_survived  = relay_alive
-        self.target_reached  = target_reached
-        self.end_reason      = reason
+        self.ended                  = True
+        self.time_elapsed           = time.time() - self.start_time
+        self.drones_total           = total
+        self.drones_survived        = alive_count
+        self.relay_survived         = relay_alive
+        self.target_reached         = target_reached
+        self.end_reason             = reason
+        self.convergence_used       = convergence_used
+        self.enemy_swarm_eliminated = enemy_swarm_eliminated
 
 
 class Swarm:
@@ -135,6 +156,7 @@ class Swarm:
         # tick FSMs
         self._mission.tick(dt, self)
         self._formation.tick(dt, self._mission.phase)
+        self.stats.update_phase(self._mission.phase)
 
         # tick and cull dead effects
         for fx in self.effects:
@@ -153,6 +175,8 @@ class Swarm:
         if _phase in ("SATURATION", "PROSECUTION"):
             if self._t_zero is None:
                 self._t_zero = self._mission.total_elapsed + config.CONVERGENCE_T_LEAD
+            if config.CONVERGENCE_ENABLED:
+                self.stats.convergence_used = True
         else:
             self._t_zero = None
 
@@ -381,6 +405,7 @@ class Swarm:
                     for t in env.turrets:
                         if np.linalg.norm(t.position - pos) <= radius:
                             t._disabled_timer = config.EMP_DISABLE_TIME
+                            self.stats.emp_turrets_disabled += 1
                 for d in self.enemy_drones:
                     if d.alive and np.linalg.norm(d.position - pos) <= radius:
                         d._stun_timer = config.EMP_STUN_TIME
@@ -391,6 +416,7 @@ class Swarm:
                     config.SMOKESCREEN_RADIUS,
                     config.SMOKESCREEN_PERSIST,
                 ))
+                self.stats.smokescreen_deployments += 1
 
             elif etype == "net_deploy":
                 pos    = evt["position"]
@@ -399,11 +425,18 @@ class Swarm:
                 for p in self.projectiles:
                     if p.alive and np.linalg.norm(p.position - pos) <= radius:
                         p.alive = False
+                        self.stats.intercepted_projectiles += 1
                 for d in self.drones:
                     if d.alive and d.side == "enemy":
                         if np.linalg.norm(d.position - pos) <= radius:
                             d.alive = False
+                            self.stats.intercepted_enemy_drones += 1
                             self.effects.append(Explosion(d.position.copy(), 12))
+                for d in self.enemy_drones:
+                    if d.alive and np.linalg.norm(d.position - pos) <= radius:
+                        d.alive = False
+                        self.stats.intercepted_enemy_drones += 1
+                        self.effects.append(Explosion(d.position.copy(), 12))
 
             elif etype == "fuse_detonate":
                 pos    = evt["position"]
@@ -412,10 +445,16 @@ class Swarm:
                 for p in self.projectiles:
                     if p.alive and np.linalg.norm(p.position - pos) <= radius:
                         p.alive = False
+                        self.stats.intercepted_projectiles += 1
                 for d in self.drones:
                     if d.alive and d.side == "enemy":
                         if np.linalg.norm(d.position - pos) <= radius:
                             d.alive = False
+                            self.stats.intercepted_enemy_drones += 1
+                for d in self.enemy_drones:
+                    if d.alive and np.linalg.norm(d.position - pos) <= radius:
+                        d.alive = False
+                        self.stats.intercepted_enemy_drones += 1
 
             elif etype == "explosion":
                 self.effects.append(Explosion(
@@ -620,13 +659,16 @@ class Swarm:
 
     def _finalise(self, reason):
         alive = [d for d in self.drones if d.alive]
-        target_reached = (reason == "target_reached")
+        target_reached     = (reason == "target_reached")
+        enemy_eliminated   = bool(self.enemy_drones) and not any(d.alive for d in self.enemy_drones)
         self.stats.finalise(
             relay_alive=self.relay.alive,
             alive_count=len(alive),
             total=len(self.drones),
             target_reached=target_reached,
             reason=reason,
+            convergence_used=self.stats.convergence_used,
+            enemy_swarm_eliminated=enemy_eliminated,
         )
         self.last_stats = self.stats
         _append_csv_log(self.stats)
@@ -717,6 +759,7 @@ class Swarm:
 
     def _promote_relay(self, drone):
         """Promote drone to full relay status."""
+        self.stats.relay_successions += 1
         drone._mimicry_active = False
         drone._is_relay       = True
         drone.role            = "relay"
@@ -810,6 +853,10 @@ def _append_csv_log(stats):
                 "time_elapsed", "drones_survived", "drones_total",
                 "relay_survived", "target_reached", "peak_signal_coverage",
                 "end_reason",
+                "phase_reached", "relay_successions",
+                "intercepted_projectiles", "intercepted_enemy_drones",
+                "emp_turrets_disabled", "smokescreen_deployments",
+                "convergence_used", "enemy_swarm_eliminated",
             ])
         w.writerow([
             f"{stats.time_elapsed:.2f}",
@@ -819,4 +866,12 @@ def _append_csv_log(stats):
             stats.target_reached,
             f"{stats.peak_signal_coverage:.3f}",
             stats.end_reason,
+            stats.phase_reached,
+            stats.relay_successions,
+            stats.intercepted_projectiles,
+            stats.intercepted_enemy_drones,
+            stats.emp_turrets_disabled,
+            stats.smokescreen_deployments,
+            stats.convergence_used,
+            stats.enemy_swarm_eliminated,
         ])

@@ -110,14 +110,16 @@ def _arrow(surface, color, start, end, width=1):
 # ── Sim renderer ──────────────────────────────────────────────────────────────
 class Renderer:
     def __init__(self, swarm):
-        self.swarm          = swarm
-        self.show_lines     = False
-        self.debug_mode     = False
-        self._font          = None
-        self._font_sm       = None
-        self._screen        = None
-        self._grid_surf     = None   # cached A* blocked-cell surface
-        self._grid_surf_ver = -1     # pathfinder version it was built from
+        self.swarm              = swarm
+        self.show_lines         = False
+        self.debug_mode         = False
+        self._font              = None
+        self._font_sm           = None
+        self._screen            = None
+        self._grid_surf         = None   # cached A* blocked-cell surface
+        self._grid_surf_ver     = -1     # pathfinder version it was built from
+        self._end_overlay_timer = 0.0
+        self._end_overlay_stats = None
 
     def init(self, screen):
         self._screen  = screen
@@ -142,6 +144,7 @@ class Renderer:
         self._draw_type_legend()
         if self.debug_mode:
             self._draw_debug_legend()
+        self._tick_end_overlay(1.0 / config.FPS)
 
     # ── world objects ─────────────────────────────────────────────────────────
     def _draw_env(self, env):
@@ -566,6 +569,55 @@ class Renderer:
                  "[↑↓]Drones [+−]Speed [1-4/S+1-4]Weights [TAB]Debug [F11]Fullscreen")
         hs = pygame.font.SysFont("monospace", 11).render(hints, True, (52, 65, 95))
         self._screen.blit(hs, (6, config.WORLD_SIZE[1] - 15))
+
+    # ── post-run end overlay ──────────────────────────────────────────────────
+    def _tick_end_overlay(self, dt):
+        stats = self.swarm.stats
+        if stats.ended:
+            if self._end_overlay_stats is not stats:
+                self._end_overlay_stats = stats
+                self._end_overlay_timer = config.END_OVERLAY_SECONDS
+            if self._end_overlay_timer > 0:
+                self._end_overlay_timer -= dt
+                self._draw_end_overlay(stats)
+
+    def _draw_end_overlay(self, stats):
+        W, H = config.WORLD_SIZE
+        rows = [
+            ("RESULT",              stats.end_reason.upper().replace("_", " ")),
+            ("Time",                f"{stats.time_elapsed:.1f} s"),
+            ("Drones survived",     f"{stats.drones_survived} / {stats.drones_total}"),
+            ("Relay survived",      "YES" if stats.relay_survived else "NO"),
+            ("Target reached",      "YES" if stats.target_reached else "NO"),
+            ("Signal coverage pk",  f"{stats.peak_signal_coverage:.1%}"),
+            ("Phase reached",       stats.phase_reached),
+            ("Relay successions",   str(stats.relay_successions)),
+            ("Intercepted projs",   str(stats.intercepted_projectiles)),
+            ("Intercepted enemies", str(stats.intercepted_enemy_drones)),
+            ("EMP turrets hit",     str(stats.emp_turrets_disabled)),
+            ("Smoke deployments",   str(stats.smokescreen_deployments)),
+            ("Convergence used",    "YES" if stats.convergence_used else "NO"),
+            ("Enemy swarm elim.",   "YES" if stats.enemy_swarm_eliminated else "NO"),
+        ]
+        lh, pad = 18, 12
+        pw = 310
+        ph = pad * 2 + len(rows) * lh + 4
+        x0 = (W - pw) // 2
+        y0 = (H - ph) // 2
+
+        pnl = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        pnl.fill((10, 12, 24, 230))
+        self._screen.blit(pnl, (x0, y0))
+        pygame.draw.rect(self._screen, (80, 100, 160), (x0, y0, pw, ph), 2)
+
+        result_col = (80, 240, 120) if stats.target_reached else (240, 90, 80)
+        hdr = self._font.render(rows[0][1], True, result_col)
+        self._screen.blit(hdr, (x0 + (pw - hdr.get_width()) // 2, y0 + pad))
+        for i, (label, val) in enumerate(rows[1:], start=1):
+            y = y0 + pad + i * lh + 2
+            self._screen.blit(self._font_sm.render(label, True, C_HUD_LABEL), (x0 + 10, y))
+            vtxt = self._font_sm.render(val, True, C_HUD_VAL)
+            self._screen.blit(vtxt, (x0 + pw - vtxt.get_width() - 10, y))
 
 
 # ── Editor renderer ───────────────────────────────────────────────────────────
