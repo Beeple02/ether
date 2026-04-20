@@ -21,10 +21,11 @@ class Agent:
         self.active_reflexes         = set()  # for debug overlay
 
         # relay succession (relay_backup only)
-        self.succession_rank  = 0
-        self._mimicry_active  = False
-        self._mimicry_timer   = 0.0
-        self._is_relay        = (role == "relay")
+        self.succession_rank       = 0
+        self._mimicry_active       = False
+        self._mimicry_timer        = 0.0
+        self._is_relay             = (role == "relay")
+        self._intercept_target_agent = None   # tracked target for interceptors
 
         # per-type runtime state
         self._smoke_charges   = config.SMOKESCREEN_CHARGES
@@ -301,72 +302,76 @@ class Agent:
 
     # INTERCEPTOR ──────────────────────────────────────────────────────────────
     def _tick_interceptor(self, context, environment, dt, neighbors, formation_target):
-        relay_pos   = context.get("relay_pos")
-        threats     = context.get("threats", [])
-        projectiles = context.get("projectiles", [])
+        relay_pos    = context.get("relay_pos")
+        threats      = context.get("threats", [])
+        projectiles  = context.get("projectiles", [])
         enemy_drones = context.get("enemy_drones", [])
+        form_mode    = context.get("formation_mode", "DENSE")
 
-        # find best target
-        best_target_pos = None
-        best_d = 1e18
-        is_drone_target = False
+        # Activation gate: only hunt when BUBBLE is active OR DRONE_THREAT reported.
+        # BUBBLE is triggered by proximity (≤500px) or by RECON PROJECTILE_THREAT.
+        bubble_active    = (form_mode == "BUBBLE")
+        has_drone_threat = any(t["kind"] == "DRONE_THREAT" for t in threats)
+        should_hunt      = bubble_active or has_drone_threat
 
-        # prioritize HUNTER enemy drones
-        for e in enemy_drones:
-            if e.alive and not _is_iff_safe(self, e):
-                d = np.linalg.norm(e.position - self.position)
-                if d < best_d:
-                    best_d = d
-                    best_target_pos = e.position.copy()
-                    is_drone_target = True
-                    self._intercept_target_agent = e
+        if should_hunt:
+            best_target_pos = None
+            best_d          = 1e18
 
-        # then incoming projectiles
-        if best_target_pos is None:
-            for p in projectiles:
-                if p.alive:
-                    d = np.linalg.norm(p.position - self.position)
+            # enemy drones first
+            for e in enemy_drones:
+                if e.alive and not _is_iff_safe(self, e):
+                    d = np.linalg.norm(e.position - self.position)
                     if d < best_d:
-                        best_d = d
-                        best_target_pos = p.position.copy()
-                        self._intercept_target_agent = p
+                        best_d                       = d
+                        best_target_pos              = e.position.copy()
+                        self._intercept_target_agent = e
 
-        if best_target_pos is not None:
-            self._move_toward(best_target_pos, environment)
-            if self.drone_type == "interceptor_net":
-                trigger_r = config.INTERCEPTOR_NET_RANGE
-            else:
-                trigger_r = config.INTERCEPTOR_FUSE_RANGE
+            # then incoming projectiles
+            if best_target_pos is None:
+                for p in projectiles:
+                    if p.alive:
+                        d = np.linalg.norm(p.position - self.position)
+                        if d < best_d:
+                            best_d                       = d
+                            best_target_pos              = p.position.copy()
+                            self._intercept_target_agent = p
 
-            if best_d < trigger_r and self._net_cd <= 0:
-                if self.drone_type == "interceptor_net":
-                    self._net_cd = config.INTERCEPTOR_NET_CD
-                    context.setdefault("events", []).append({
-                        "type": "net_deploy",
-                        "position": self.position.copy(),
-                        "radius": config.INTERCEPTOR_NET_RADIUS,
-                        "drone": self,
-                    })
-                else:  # fuse
-                    context.setdefault("events", []).append({
-                        "type": "fuse_detonate",
-                        "position": self.position.copy(),
-                        "radius": config.INTERCEPTOR_FUSE_RANGE * 3,
-                        "drone": self,
-                    })
-                    self.alive = False
-            return True
+            if best_target_pos is not None:
+                self._move_toward(best_target_pos, environment)
+                trigger_r = (config.INTERCEPTOR_NET_RANGE
+                             if self.drone_type == "interceptor_net"
+                             else config.INTERCEPTOR_FUSE_RANGE)
 
-        # no threat — fall back to BUBBLE perimeter around relay
-        if relay_pos is not None:
-            formation_mode = context.get("formation_mode", "DENSE")
-            if formation_mode == "BUBBLE":
-                idx = context.get("drone_idx", 0)
-                n   = max(context.get("n_interceptors", 1), 1)
-                angle = 2 * np.pi * idx / n
-                tgt = relay_pos + np.array([np.cos(angle), np.sin(angle)]) * config.BUBBLE_RADIUS
-                self._move_toward(tgt, environment)
+                if best_d < trigger_r and self._net_cd <= 0:
+                    if self.drone_type == "interceptor_net":
+                        self._net_cd = config.INTERCEPTOR_NET_CD
+                        context.setdefault("events", []).append({
+                            "type":     "net_deploy",
+                            "position": self.position.copy(),
+                            "radius":   config.INTERCEPTOR_NET_RADIUS,
+                            "drone":    self,
+                        })
+                    else:  # fuse — close-range area detonation, destroys self
+                        context.setdefault("events", []).append({
+                            "type":     "fuse_detonate",
+                            "position": self.position.copy(),
+                            "radius":   config.INTERCEPTOR_FUSE_RANGE * 3,
+                            "drone":    self,
+                        })
+                        self.alive = False
                 return True
+
+        # No active threat (or hunt conditions not met) — hold BUBBLE perimeter.
+        # Always maintain perimeter regardless of current formation mode so
+        # interceptors stay positioned to react instantly when threats appear.
+        if relay_pos is not None:
+            idx   = context.get("drone_idx", 0)
+            n     = max(context.get("n_interceptors", 1), 1)
+            angle = 2 * np.pi * idx / n
+            tgt   = relay_pos + np.array([np.cos(angle), np.sin(angle)]) * config.BUBBLE_RADIUS
+            self._move_toward(tgt, environment)
+            return True
         return False
 
     # RELAY_BACKUP ─────────────────────────────────────────────────────────────
