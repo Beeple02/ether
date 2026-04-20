@@ -70,7 +70,7 @@ def main():
     pygame.init()
     # SCALED flag: game always renders at WORLD_SIZE, pygame handles
     # stretching to actual window / fullscreen — mouse coords stay in world space
-    screen = pygame.display.set_mode(config.WORLD_SIZE, pygame.SCALED | pygame.RESIZABLE)
+    screen = pygame.display.set_mode(config.WORLD_SIZE, pygame.SCALED | pygame.RESIZABLE | pygame.FULLSCREEN)
     pygame.display.set_caption("Drone Swarm Simulation")
     clock = pygame.time.Clock()
 
