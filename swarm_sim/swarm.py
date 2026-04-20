@@ -583,9 +583,7 @@ class Swarm:
                 d.position.copy() for d in self.drones
                 if d.alive and d.drone_type == "jammer"
             ]
-            candidates = [d for d in self.drones if d.alive]
-            if self.relay.alive:
-                candidates.append(self.relay)
+            drone_candidates = [d for d in self.drones if d.alive]
 
             for turret in env.turrets:
                 # EMP disable countdown
@@ -596,6 +594,15 @@ class Swarm:
                 turret._cooldown -= dt
                 if turret._cooldown > 0:
                     continue
+
+                # Relay is only a valid target if no drones are within turret range
+                drone_in_range = any(
+                    float(np.linalg.norm(d.position - turret.position)) < turret.range
+                    for d in drone_candidates
+                )
+                candidates = drone_candidates + (
+                    [self.relay] if self.relay.alive and not drone_in_range else []
+                )
 
                 nearest = None
                 nd = turret.range
