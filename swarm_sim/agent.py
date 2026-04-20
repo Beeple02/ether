@@ -38,6 +38,11 @@ class Agent:
         self._convergence_angle = 0.0       # assigned by swarm
         self._stun_timer      = 0.0         # enemy stun from EMP
 
+        # degraded-command / last-known heading (C)
+        self._last_good_heading = np.zeros(2)
+        self._last_good_ft      = None       # last formation target
+        self._heading_decay     = 0.0        # seconds since signal went below HIGH
+
     # ── properties ────────────────────────────────────────────────────────────
     @property
     def speed_mult(self):
@@ -124,7 +129,17 @@ class Agent:
             self._finalize_reflex(context, environment)
             return
 
-        # player drones — type-specific then boids fallback
+        # player drones — update heading memory before any behavior dispatch
+        if self.signal >= config.SIGNAL_TIER_HIGH:
+            spd = float(np.linalg.norm(self.velocity))
+            if spd > 0.1:
+                self._last_good_heading = self.velocity / spd
+            if formation_target is not None:
+                self._last_good_ft = formation_target.copy()
+            self._heading_decay = 0.0
+        else:
+            self._heading_decay = min(self._heading_decay + dt, config.HEADING_MEMORY_DECAY * 2)
+
         # Below SIGNAL_TIER_LOW: autonomous — skip role behavior, pure local boids
         phase = context.get("phase", "TRANSIT")
         if self.signal < config.SIGNAL_TIER_LOW:
@@ -158,6 +173,8 @@ class Agent:
             return self._tick_fast(context, environment, dt, phase, neighbors, formation_target)
         if dt_name == "heavy":
             return self._tick_heavy(context, environment, dt, phase)
+        if dt_name == "mesh_relay":
+            return self._tick_mesh_relay(context, environment, dt, phase)
         return False
 
     # EMP ──────────────────────────────────────────────────────────────────────
@@ -345,7 +362,7 @@ class Agent:
 
             # enemy drones first
             for e in enemy_drones:
-                if e.alive and not _is_iff_safe(self, e):
+                if e.alive and can_engage(self, e, context):
                     d = np.linalg.norm(e.position - self.position)
                     if d < best_d:
                         best_d                       = d
@@ -370,21 +387,27 @@ class Agent:
 
                 if best_d < trigger_r and self._net_cd <= 0:
                     if self.drone_type == "interceptor_net":
-                        self._net_cd = config.INTERCEPTOR_NET_CD
-                        context.setdefault("events", []).append({
-                            "type":     "net_deploy",
-                            "position": self.position.copy(),
-                            "radius":   config.INTERCEPTOR_NET_RADIUS,
-                            "drone":    self,
-                        })
+                        net_r = config.INTERCEPTOR_NET_RADIUS
+                        # L1 gate: never catch relay or relay_backup in the net
+                        if _relay_safe_from_blast(self.position, net_r, context):
+                            self._net_cd = config.INTERCEPTOR_NET_CD
+                            context.setdefault("events", []).append({
+                                "type":     "net_deploy",
+                                "position": self.position.copy(),
+                                "radius":   net_r,
+                                "drone":    self,
+                            })
                     else:  # fuse — close-range area detonation, destroys self
-                        context.setdefault("events", []).append({
-                            "type":     "fuse_detonate",
-                            "position": self.position.copy(),
-                            "radius":   config.INTERCEPTOR_FUSE_RANGE * 3,
-                            "drone":    self,
-                        })
-                        self.alive = False
+                        fuse_r = config.INTERCEPTOR_FUSE_RANGE * 3
+                        # L1 gate: never splash relay or relay_backup
+                        if _relay_safe_from_blast(self.position, fuse_r, context):
+                            context.setdefault("events", []).append({
+                                "type":     "fuse_detonate",
+                                "position": self.position.copy(),
+                                "radius":   fuse_r,
+                                "drone":    self,
+                            })
+                            self.alive = False
                 return True
 
         # No active threat (or hunt conditions not met) — hold BUBBLE perimeter.
@@ -468,6 +491,36 @@ class Agent:
         self._move_toward(target_center, environment)
         return True
 
+    # MESH_RELAY ───────────────────────────────────────────────────────────────
+    def _tick_mesh_relay(self, context, environment, dt, phase):
+        """Position along the relay→target axis at ~0.8 × SIGNAL_RADIUS ahead.
+
+        This places the node near the outer edge of the relay's direct comm
+        footprint so it can serve as a 1-hop bridge for drones beyond direct
+        relay range.  When mesh is disabled it falls through to boids.
+        """
+        if not config.MESH_SIGNAL_ENABLED:
+            return False  # fall through to boids
+
+        relay_pos = context.get("relay_pos")
+        relay_vel = context.get("relay_vel", np.zeros(2))
+        if relay_pos is None:
+            return False
+
+        if np.linalg.norm(relay_vel) > 0.1:
+            heading = normalize(relay_vel)
+        else:
+            tc = context.get("target_center")
+            heading = (normalize(np.array(tc, dtype=float) - relay_pos)
+                       if tc is not None else np.array([0.0, -1.0]))
+
+        # Orbit slowly around the anchor point to avoid static clustering
+        self._t += 0.018
+        orbit_offset = np.array([np.cos(self._t), np.sin(self._t)]) * 18
+        anchor = relay_pos + heading * (config.SIGNAL_RADIUS * 0.8) + orbit_offset
+        self._move_toward(anchor, environment)
+        return True
+
     # enemy AI ─────────────────────────────────────────────────────────────────
     def _enemy_tick(self, context, environment, dt):
         if self._stun_timer > 0:
@@ -498,7 +551,9 @@ class Agent:
                 self._move_toward(tgt, environment)
 
         elif self.drone_type == "kamikaze":
-            alive_p = [d for d in player_drones if d.alive]
+            # L1 gate: kamikazes may not target relay or relay_backup
+            alive_p = [d for d in player_drones
+                       if d.alive and can_engage(self, d)]
             if alive_p:
                 nearest = min(alive_p, key=lambda d: np.linalg.norm(d.position - self.position))
                 self._move_toward(nearest.position, environment)
@@ -559,9 +614,14 @@ class Agent:
             w_sep, w_aln, w_coh, w_rel = w["separation"], w["alignment"], w["cohesion"], w["relay"]
             wander = np.zeros(2)
         elif s > config.SIGNAL_TIER_LOW:
+            # Partial signal: halved aln/coh, no relay force.
+            # Steer on last-known heading with timed decay (replaces velocity dampener).
             w_sep, w_aln, w_coh, w_rel = w["separation"], w["alignment"]*0.5, w["cohesion"]*0.5, 0.0
-            wander = np.zeros(2)
-            self.velocity *= 0.97
+            decay_frac = max(0.0, 1.0 - self._heading_decay / config.HEADING_MEMORY_DECAY)
+            if np.linalg.norm(self._last_good_heading) > 0.1 and decay_frac > 0.01:
+                wander = self._last_good_heading * decay_frac * config.MAX_FORCE * 0.8
+            else:
+                wander = np.zeros(2)
         else:
             w_sep, w_aln, w_coh, w_rel = w["separation"], w["alignment"], w["cohesion"], 0.0
             wander = np.random.uniform(-1, 1, 2) * 0.08
@@ -669,9 +729,43 @@ class Agent:
         self.position[1] = np.clip(self.position[1], 0, H)
 
 
-# ── helpers ────────────────────────────────────────────────────────────────────
+# ── L1 reflex engagement gates (cannot be overridden by any higher layer) ─────
+def can_engage(attacker, target, context=None):
+    """Return True only when engagement is permitted by hard reflex rules.
+
+    Hard rules (L1 authority — no higher layer may bypass):
+      1. Never engage same-side units.
+      2. Never engage the relay (any promotion state).
+      3. Never engage relay_backup drones (succession candidates).
+    """
+    if getattr(target, "side", None) == getattr(attacker, "side", None):
+        return False
+    if getattr(target, "role", None) == "relay" or getattr(target, "_is_relay", False):
+        return False
+    if getattr(target, "drone_type", None) == "relay_backup":
+        return False
+    return True
+
+
+def _relay_safe_from_blast(blast_pos, radius, context):
+    """Return True if no relay or relay_backup falls within the blast radius.
+
+    Used by area-effect weapons (fuse, net) to enforce the no-splash-damage
+    rule on high-value friendly units.
+    """
+    relay_pos = context.get("relay_pos") if context else None
+    if relay_pos is not None:
+        if float(np.linalg.norm(np.array(blast_pos) - relay_pos)) < radius:
+            return False
+    for pd in (context.get("player_drones", []) if context else []):
+        if pd.alive and pd.drone_type == "relay_backup":
+            if float(np.linalg.norm(np.array(blast_pos) - pd.position)) < radius:
+                return False
+    return True
+
+
 def _is_iff_safe(agent, target):
-    """Return True if target is friendly (same side) — never engage."""
+    """Kept for backwards compatibility. Use can_engage() for new code."""
     return target.side == agent.side
 
 

@@ -20,6 +20,20 @@ SIGNAL_LOS_PEN   = 0.3   # multiplier when LOS is blocked
 SIGNAL_TIER_HIGH = 0.6
 SIGNAL_TIER_LOW  = 0.3
 
+# ── mesh comms model ──────────────────────────────────────────────────────────
+# Feature-flag: False → revert to direct relay-distance model (old behaviour)
+MESH_SIGNAL_ENABLED  = True
+MESH_COMM_RADIUS     = 200   # px — inter-drone mesh hop range
+MESH_HOP_ATTENUATION = 0.85  # signal multiplied by this per mesh hop
+MESH_RELAY_BOOST     = 1.10  # mesh_relay nodes re-broadcast at this factor
+
+# ── heading / degraded-command memory ────────────────────────────────────────
+HEADING_MEMORY_DECAY = 12.0  # seconds until retained heading steering → 0
+
+# ── operator uplink ───────────────────────────────────────────────────────────
+# Feature-flag: False → uplink always GOOD, zero behavioural change
+UPLINK_ENABLED = False
+
 # ── airframe classes ─────────────────────────────────────────────────────────
 # Used by renderer to pick shape and by config below for size defaults.
 AIRFRAME = {
@@ -42,6 +56,10 @@ DRONE_TYPES = {
     "decoy":            {"color": (195, 160,  25), "size": 5, "speed_mult": 0.8, "perception_mult": 1.0, "airframe": "medium"},
     "recon":            {"color": ( 75, 195,  75), "size": 7, "speed_mult": 1.1, "perception_mult": 1.5, "airframe": "large"},
     "relay_backup":     {"color": (175, 155,  45), "size": 7, "speed_mult": 0.8, "perception_mult": 1.0, "airframe": "large"},
+    # Comms infrastructure: extends mesh coverage along the mission axis.
+    # Not a succession candidate — a signal repeater that re-broadcasts relay
+    # commands to drones beyond direct relay range.
+    "mesh_relay":       {"color": (130, 195, 255), "size": 5, "speed_mult": 0.9, "perception_mult": 1.3, "airframe": "medium"},
 }
 
 # ── enemy drone types ────────────────────────────────────────────────────────
@@ -52,7 +70,7 @@ ENEMY_DRONE_TYPES = {
 
 # ── loadout ──────────────────────────────────────────────────────────────────
 LOADOUT = {
-    "fast":             0.30,
+    "fast":             0.26,
     "heavy":            0.10,
     "recon":            0.08,
     "interceptor_net":  0.08,
@@ -63,26 +81,27 @@ LOADOUT = {
     "emp":              0.04,
     "decoy":            0.06,
     "relay_backup":     0.12,
+    "mesh_relay":       0.04,
 }
 
 LOADOUT_PRESETS = [
     {   # Default
-        "fast": 0.30, "heavy": 0.10, "recon": 0.08,
+        "fast": 0.26, "heavy": 0.10, "recon": 0.08,
         "interceptor_net": 0.08, "interceptor_fuse": 0.04, "loiter": 0.08,
         "smokescreen": 0.06, "jammer": 0.04, "emp": 0.04,
-        "decoy": 0.06, "relay_backup": 0.12,
+        "decoy": 0.06, "relay_backup": 0.12, "mesh_relay": 0.04,
     },
-    {   # Assault
-        "fast": 0.40, "heavy": 0.20, "recon": 0.05,
+    {   # Assault — fewer comms drones, more strikers
+        "fast": 0.36, "heavy": 0.20, "recon": 0.05,
         "interceptor_net": 0.05, "interceptor_fuse": 0.05, "loiter": 0.05,
         "smokescreen": 0.04, "jammer": 0.02, "emp": 0.06,
-        "decoy": 0.03, "relay_backup": 0.05,
+        "decoy": 0.03, "relay_backup": 0.05, "mesh_relay": 0.04,
     },
-    {   # Defensive
-        "fast": 0.18, "heavy": 0.05, "recon": 0.10,
+    {   # Defensive — extra mesh coverage for signal resilience
+        "fast": 0.15, "heavy": 0.05, "recon": 0.10,
         "interceptor_net": 0.15, "interceptor_fuse": 0.10, "loiter": 0.05,
         "smokescreen": 0.10, "jammer": 0.08, "emp": 0.02,
-        "decoy": 0.05, "relay_backup": 0.12,
+        "decoy": 0.05, "relay_backup": 0.12, "mesh_relay": 0.03,
     },
 ]
 LOADOUT_PRESET_IDX   = 0

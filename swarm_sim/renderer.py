@@ -287,6 +287,14 @@ class Renderer:
             else:
                 pygame.draw.circle(self._screen, color, ipos, size)
 
+            # mesh_relay: faint comm-radius ring to show coverage footprint
+            if d.drone_type == "mesh_relay" and config.MESH_SIGNAL_ENABLED:
+                mr = config.MESH_COMM_RADIUS
+                ms = pygame.Surface((mr * 2 + 2, mr * 2 + 2), pygame.SRCALPHA)
+                pygame.draw.circle(ms, (130, 195, 255, 14), (mr + 1, mr + 1), mr)
+                pygame.draw.circle(ms, (130, 195, 255, 40), (mr + 1, mr + 1), mr, 1)
+                self._screen.blit(ms, (ipos[0] - mr - 1, ipos[1] - mr - 1))
+
             # EMP arming pulse — expanding purple ring grows over 3 s charge window
             if d.drone_type == "emp" and getattr(d, "_emp_stage", None) == "arming":
                 t_frac  = min(1.0, d._emp_arming_t / config.EMP_ARMING_DELAY)
@@ -596,6 +604,23 @@ class Renderer:
         conv_str = ("OFF" if not config.CONVERGENCE_ENABLED
                     else f"T-{max(0.0, t0-te):.1f}s" if t0 is not None else "ON")
 
+        # uplink state
+        uplink     = swarm._uplink
+        upl_state  = uplink.state if config.UPLINK_ENABLED else "—"
+        upl_col    = (C_HUD_VAL if upl_state in ("GOOD", "—")
+                      else (255, 215, 50) if upl_state == "DEGRADED"
+                      else (240, 80, 80))
+
+        # signal tier distribution
+        alive_drones = [d for d in swarm.drones if d.alive]
+        n_alive      = len(alive_drones)
+        n_high   = sum(1 for d in alive_drones if d.signal >= config.SIGNAL_TIER_HIGH)
+        n_partial= sum(1 for d in alive_drones
+                       if config.SIGNAL_TIER_LOW <= d.signal < config.SIGNAL_TIER_HIGH)
+        n_auto   = n_alive - n_high - n_partial
+        mesh_tag = "MESH" if config.MESH_SIGNAL_ENABLED else "DIRECT"
+        sig_str  = f"{n_high}H {n_partial}P {n_auto}A  [{mesh_tag}]"
+
         # active effects
         smoke_fx  = [fx for fx in swarm.effects if isinstance(fx, SmokeCloud) and fx.alive]
         emp_t     = [t for t in (env.turrets if env else []) if t._disabled_timer > 0]
@@ -608,14 +633,16 @@ class Renderer:
         if jammers and phase in ("SUPPRESSION", "SATURATION"):
             fx_rows.append(f"JAMMER ×{len(jammers)}")
 
-        lh, pad, pw = 17, 8, 176
+        lh, pad, pw = 17, 8, 192
         banner_h    = 26
         data_rows = [
             ("FPS",    f"{fps:.0f}" + ("  ■ PAUSE" if paused else ""), C_HUD_VAL),
             ("FORM",   swarm._formation.mode,                           C_HUD_VAL),
             ("RELAY",  rel_str,                                         rel_col),
+            ("UPLINK", upl_state,                                       upl_col),
             ("CONV",   conv_str,                                        C_HUD_VAL),
             ("DRONES", f"{swarm.alive_count} / {config.NUM_DRONES}",   C_HUD_VAL),
+            ("SIG",    sig_str,                                         C_HUD_VAL),
             ("SPEED",  f"{config.MAX_SPEED:.1f}",                      C_HUD_VAL),
             ("SEP",    f"{w['separation']:.1f}",                        C_HUD_VAL),
             ("ALN",    f"{w['alignment']:.1f}",                         C_HUD_VAL),

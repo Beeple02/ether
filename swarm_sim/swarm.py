@@ -7,6 +7,7 @@ from .physics import normalize
 from .environment import Projectile
 from .mission import MissionFSM, FormationFSM
 from .effects import EMPBlast, SmokeCloud, NetDeploy, Explosion
+from .uplink import UplinkState
 
 
 _PHASE_ORDER = {p: i for i, p in enumerate(
@@ -131,6 +132,7 @@ class Swarm:
         self.stats.drones_total = config.NUM_DRONES
         self._mission          = MissionFSM()
         self._formation        = FormationFSM()
+        self._uplink           = UplinkState()
         self.effects           = []
         self._succession_active = False   # True while mimicry window is open
         self._last_threats      = []      # RECON reports from last tick (for renderer)
@@ -179,7 +181,8 @@ class Swarm:
         dt  = 1.0 / config.FPS
         env = self._environment
 
-        # tick FSMs
+        # tick FSMs + uplink
+        self._uplink.tick(dt)
         self._mission.tick(dt, self)
         self._formation.tick(dt, self._mission.phase)
         self.stats.update_phase(self._mission.phase)
@@ -256,6 +259,8 @@ class Swarm:
             "convergence_enabled": config.CONVERGENCE_ENABLED,
             "t_zero":              self._t_zero,
             "total_elapsed":       self._mission.total_elapsed,
+            "mesh_enabled":        config.MESH_SIGNAL_ENABLED,
+            "uplink":              self._uplink,
         }
 
         _grid = _SpatialGrid(alive, config.PERCEPTION_RADIUS)
@@ -293,17 +298,16 @@ class Swarm:
 
     # ── signal ────────────────────────────────────────────────────────────────
     def _update_signals(self):
-        env = self._environment
+        env       = self._environment
         relay_pos = self.relay.position
-        R = config.SIGNAL_RADIUS
-        R2 = R * 2
+        R         = config.SIGNAL_RADIUS
+        R2        = R * 2
+        alive     = [d for d in self.drones if d.alive]
 
-        strong = 0
-        alive_count = 0
-        for d in self.drones:
-            if not d.alive:
-                continue
-            alive_count += 1
+        # Pass 0 — direct relay→drone distance + LOS (preserved exactly when
+        # mesh is disabled, so MESH_SIGNAL_ENABLED=False is byte-for-byte equivalent
+        # to the old code path).
+        for d in alive:
             dist = float(np.linalg.norm(d.position - relay_pos))
             if dist <= R:
                 s = 1.0
@@ -311,14 +315,45 @@ class Swarm:
                 s = 0.0
             else:
                 s = 1.0 - (dist - R) / R
-            if env is not None and not env.has_line_of_sight(d.position, relay_pos):
+            if env is not None and s > 0 and not env.has_line_of_sight(d.position, relay_pos):
                 s *= config.SIGNAL_LOS_PEN
             d.signal = float(np.clip(s, 0.0, 1.0))
-            if d.signal > config.SIGNAL_TIER_HIGH:
-                strong += 1
 
-        if alive_count > 0:
-            coverage = strong / alive_count
+        if config.MESH_SIGNAL_ENABLED and alive:
+            # Pass 1 & 2 — 2-hop mesh extension.
+            # Each pass: every drone below full signal looks for a better-connected
+            # neighbour within MESH_COMM_RADIUS; mesh_relay drones re-broadcast at
+            # a slightly boosted factor.  No per-edge LOS check (inter-drone radio
+            # assumed clear at short range) to keep this O(n·k) not O(n·k·obstacles).
+            mesh_r   = float(config.MESH_COMM_RADIUS)
+            atten    = config.MESH_HOP_ATTENUATION
+            boost    = config.MESH_RELAY_BOOST
+            hi       = config.SIGNAL_TIER_HIGH
+
+            mesh_grid = _SpatialGrid(alive, mesh_r)
+
+            for _pass in range(2):
+                # Snapshot current signals so within-pass ordering is irrelevant.
+                snap = {id(d): d.signal for d in alive}
+                for d in alive:
+                    if snap[id(d)] >= 1.0:
+                        continue  # already saturated — skip
+                    for nb in mesh_grid.query(d, mesh_r):
+                        nb_sig = snap[id(nb)]
+                        if nb_sig <= snap[id(d)]:
+                            continue
+                        # mesh_relay nodes propagate at a boosted factor
+                        factor = boost if nb.drone_type == "mesh_relay" else atten
+                        candidate = min(nb_sig * factor, 1.0)
+                        if candidate > snap[id(d)]:
+                            snap[id(d)] = candidate
+                for d in alive:
+                    d.signal = float(np.clip(snap[id(d)], 0.0, 1.0))
+
+        # Update peak high-signal coverage metric
+        strong = sum(1 for d in alive if d.signal > config.SIGNAL_TIER_HIGH)
+        if alive:
+            coverage = strong / len(alive)
             if coverage > self.stats.peak_signal_coverage:
                 self.stats.peak_signal_coverage = coverage
 
@@ -713,6 +748,8 @@ class Swarm:
 
     # ── phase control ─────────────────────────────────────────────────────────
     def advance_phase(self):
+        if not self._uplink.can_receive_command():
+            return  # uplink DEGRADED/LOST — operator command dropped
         if self._mission.advance():
             self._formation.set_for_phase(self._mission.phase)
 
