@@ -125,10 +125,14 @@ class Agent:
             return
 
         # player drones — type-specific then boids fallback
+        # Below SIGNAL_TIER_LOW: autonomous — skip role behavior, pure local boids
         phase = context.get("phase", "TRANSIT")
-        handled = self._special_tick(context, environment, dt, phase, neighbors, formation_target)
-        if not handled:
-            self._apply_boids(neighbors, formation_target, environment)
+        if self.signal < config.SIGNAL_TIER_LOW:
+            self._apply_boids(neighbors, None, environment)
+        else:
+            handled = self._special_tick(context, environment, dt, phase, neighbors, formation_target)
+            if not handled:
+                self._apply_boids(neighbors, formation_target, environment)
         self._finalize_reflex(context, environment)
 
     # ── type-specific behaviors ────────────────────────────────────────────────

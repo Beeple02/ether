@@ -55,6 +55,32 @@ class RunStats:
         self.enemy_swarm_eliminated = enemy_swarm_eliminated
 
 
+class _SpatialGrid:
+    """Bucket agents into cells so neighbor queries are O(k) instead of O(n)."""
+    def __init__(self, agents, cell_size):
+        self._c    = float(cell_size)
+        self._grid = {}
+        for a in agents:
+            key = (int(a.position[0] / self._c), int(a.position[1] / self._c))
+            self._grid.setdefault(key, []).append(a)
+
+    def query(self, agent, radius):
+        c    = self._c
+        cx   = int(agent.position[0] / c)
+        cy   = int(agent.position[1] / c)
+        span = max(1, int(np.ceil(radius / c)))
+        r2   = radius * radius
+        out  = []
+        for dx in range(-span, span + 1):
+            for dy in range(-span, span + 1):
+                for o in self._grid.get((cx + dx, cy + dy), []):
+                    if o is not agent:
+                        d2 = float(np.sum((o.position - agent.position) ** 2))
+                        if d2 < r2:
+                            out.append(o)
+        return out
+
+
 class Swarm:
     def __init__(self):
         self.relay         = None
@@ -232,12 +258,13 @@ class Swarm:
             "total_elapsed":       self._mission.total_elapsed,
         }
 
+        _grid = _SpatialGrid(alive, config.PERCEPTION_RADIUS)
         for i, drone in enumerate(alive):
             is_int  = drone.drone_type in _INT_TYPES
             int_idx = int_indices.get(id(drone), 0) if is_int else 0
             ctx["drone_idx"] = int_idx if is_int else i
             ft = self._formation_target(drone, i, n_alive, int_idx, n_interceptors)
-            drone.tick(self._neighbors(drone, alive), ft, env, context=ctx)
+            drone.tick(self._neighbors(drone, alive, _grid), ft, env, context=ctx)
 
         # tick enemy drones — no formation target, no boids neighbors
         for ed in ctx["enemy_drones"]:
@@ -802,13 +829,13 @@ class Swarm:
         return np.mean([z.center() for z in targets], axis=0)
 
     # ── utils ─────────────────────────────────────────────────────────────────
-    def _neighbors(self, agent, alive):
+    def _neighbors(self, agent, alive, grid=None):
         perc_mult = config.DRONE_TYPES.get(agent.drone_type or "fast", {}).get("perception_mult", 1.0)
-        r2 = (config.PERCEPTION_RADIUS * perc_mult) ** 2
-        return [
-            o for o in alive
-            if o is not agent and np.sum((o.position - agent.position) ** 2) < r2
-        ]
+        r = config.PERCEPTION_RADIUS * perc_mult
+        if grid is not None:
+            return grid.query(agent, r)
+        r2 = r * r
+        return [o for o in alive if o is not agent and np.sum((o.position - agent.position)**2) < r2]
 
     def kill_random(self):
         alive = [d for d in self.drones if d.alive]

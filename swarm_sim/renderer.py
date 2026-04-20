@@ -55,6 +55,24 @@ DC_THREAT_D   = (220,  80, 220)   # DRONE_THREAT label
 FORCE_SCALE   = 55   # pixels per unit of force
 SIDEBAR_W     = config.EDITOR_SIDEBAR_W
 
+_SIG_YELLOW = (255, 215,  50)   # partial-signal tint target
+_SIG_RED    = (220,  55,  55)   # autonomous tint target
+
+
+def _signal_color(base, signal):
+    """Lerp drone type color toward yellow (partial) or red (autonomous)."""
+    hi = config.SIGNAL_TIER_HIGH
+    lo = config.SIGNAL_TIER_LOW
+    if signal >= hi:
+        return base
+    if signal >= lo:
+        t = 1.0 - (signal - lo) / (hi - lo)
+        tgt = _SIG_YELLOW
+    else:
+        t   = min(1.0, 1.0 - signal / lo)
+        tgt = _SIG_RED
+    return tuple(int(a + (b - a) * t) for a, b in zip(base, tgt))
+
 
 # ── shape helpers ─────────────────────────────────────────────────────────────
 def _draw_diamond(surface, color, center, size):
@@ -251,7 +269,8 @@ class Renderer:
             if d._is_relay:
                 continue   # promoted relay is drawn by _draw_relay()
 
-            color = d.type_color
+            color = (_signal_color(d.type_color, d.signal)
+                     if d.side == "player" else d.type_color)
             size  = d.type_size
             pos   = d.position
             af    = d.airframe
