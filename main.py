@@ -49,6 +49,8 @@ def handle_events(swarm, renderer, ed_renderer, editor, state):
             state["editor_mode"] = True
         elif key == pygame.K_F11:
             pygame.display.toggle_fullscreen()
+        elif key == pygame.K_h:
+            renderer.help_mode = not renderer.help_mode
         elif key == pygame.K_TAB:
             renderer.debug_mode = not renderer.debug_mode
         elif key == pygame.K_m:

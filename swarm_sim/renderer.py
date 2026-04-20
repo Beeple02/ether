@@ -113,8 +113,10 @@ class Renderer:
         self.swarm              = swarm
         self.show_lines         = False
         self.debug_mode         = False
+        self.help_mode          = False
         self._font              = None
         self._font_sm           = None
+        self._font_lg           = None
         self._screen            = None
         self._grid_surf         = None   # cached A* blocked-cell surface
         self._grid_surf_ver     = -1     # pathfinder version it was built from
@@ -125,6 +127,7 @@ class Renderer:
         self._screen  = screen
         self._font    = pygame.font.SysFont("monospace", 14)
         self._font_sm = pygame.font.SysFont("monospace", 12)
+        self._font_lg = pygame.font.SysFont("monospace", 17, bold=True)
 
     def draw(self, fps, paused):
         s = self._screen
@@ -145,6 +148,8 @@ class Renderer:
         if self.debug_mode:
             self._draw_debug_legend()
         self._tick_end_overlay(1.0 / config.FPS)
+        if self.help_mode:
+            self._draw_help_overlay()
 
     # ── world objects ─────────────────────────────────────────────────────────
     def _draw_env(self, env):
@@ -494,14 +499,17 @@ class Renderer:
     # ── type legend ───────────────────────────────────────────────────────────
     def _draw_type_legend(self):
         alive_counts = {}
+        total_counts = {}
         for d in self.swarm.drones:
-            if d.alive and d.drone_type:
-                alive_counts[d.drone_type] = alive_counts.get(d.drone_type, 0) + 1
+            if d.drone_type:
+                total_counts[d.drone_type] = total_counts.get(d.drone_type, 0) + 1
+                if d.alive:
+                    alive_counts[d.drone_type] = alive_counts.get(d.drone_type, 0) + 1
 
         W, H  = config.WORLD_SIZE
         lh    = 16
         pad   = 6
-        pw    = 172
+        pw    = 186
         ph    = pad * 2 + (len(config.DRONE_TYPES) + 1) * lh
         x0    = W - pw - 6
         y0    = H - ph - 18
@@ -511,16 +519,17 @@ class Renderer:
         self._screen.blit(pnl, (x0, y0))
         pygame.draw.rect(self._screen, C_HUD_BDR, (x0, y0, pw, ph), 1)
 
-        hdr = self._font_sm.render("TYPE          CNT", True, C_HUD_BDR)
+        hdr = self._font_sm.render("TYPE        ALIVE/TOTAL", True, C_HUD_BDR)
         self._screen.blit(hdr, (x0 + 22, y0 + pad))
 
         y = y0 + pad + lh
         for dt, info in config.DRONE_TYPES.items():
-            color = info["color"]
-            af    = info["airframe"]
-            sz    = min(info["size"], 5)
-            count = alive_counts.get(dt, 0)
-            cx, cy = x0 + 11, y + lh // 2
+            color   = info["color"]
+            af      = info["airframe"]
+            sz      = min(info["size"], 5)
+            alive   = alive_counts.get(dt, 0)
+            total   = total_counts.get(dt, 0)
+            cx, cy  = x0 + 11, y + lh // 2
 
             if af == "medium":
                 _draw_diamond(self._screen, color, (cx, cy), sz)
@@ -529,46 +538,194 @@ class Renderer:
             else:
                 pygame.draw.circle(self._screen, color, (cx, cy), sz)
 
-            label_col = color if count else C_HUD_BDR
-            row = f"{dt:<14} {count:3d}"
+            label_col = color if alive else C_HUD_BDR
+            row = f"{dt:<13} {alive:2d}/{total:2d}"
             self._screen.blit(self._font_sm.render(row, True, label_col), (x0 + 20, y + 2))
             y += lh
 
     # ── HUD ──────────────────────────────────────────────────────────────────
+    _PHASE_COL = {
+        "TRANSIT":     ( 80, 110, 210),
+        "SUPPRESSION": (210,  90,  50),
+        "SATURATION":  (100, 200,  70),
+        "PROSECUTION": (230, 120,  40),
+        "PERSISTENCE": ( 70, 180, 120),
+    }
+
+    def _relay_status(self):
+        relay   = self.swarm.relay
+        drones  = self.swarm.drones
+        backups = [d for d in drones if d.alive and d.drone_type == "relay_backup"]
+        if not relay.alive:
+            return "DEAD", (240, 80, 80)
+        if relay in drones:          # promoted backup
+            rk = getattr(relay, "succession_rank", "?")
+            return f"PROMOTED #{rk}", (255, 215, 50)
+        return f"1/{len(backups)+1}", C_HUD_VAL
+
     def _draw_hud(self, fps, paused):
+        W, H    = config.WORLD_SIZE
+        swarm   = self.swarm
+        mission = swarm._mission
+        phase   = mission.phase
         w       = config.WEIGHTS
-        mission = self.swarm._mission
-        t0 = self.swarm._t_zero
-        te = mission.total_elapsed
+        t0, te  = swarm._t_zero, mission.total_elapsed
+        env     = swarm._environment
+
+        p_col    = self._PHASE_COL.get(phase, C_HUD_VAL)
+        rel_str, rel_col = self._relay_status()
         conv_str = ("OFF" if not config.CONVERGENCE_ENABLED
-                    else f"T-{max(0.0, t0 - te):.1f}s" if t0 is not None
-                    else "ON")
-        rows = [
-            ("FPS",    f"{fps:.0f}" + ("  ■ PAUSED" if paused else "")),
-            ("PHASE",  mission.phase),
-            ("FORM",   self.swarm._formation.mode),
-            ("CONV",   conv_str),
-            ("DRONES", f"{self.swarm.alive_count} / {config.NUM_DRONES}"),
-            ("SPEED",  f"{config.MAX_SPEED:.1f}"),
-            ("SEP",    f"{w['separation']:.1f}"),
-            ("ALN",    f"{w['alignment']:.1f}"),
-            ("COH",    f"{w['cohesion']:.1f}"),
-            ("REL",    f"{w['relay']:.1f}"),
+                    else f"T-{max(0.0, t0-te):.1f}s" if t0 is not None else "ON")
+
+        # active effects
+        smoke_fx  = [fx for fx in swarm.effects if isinstance(fx, SmokeCloud) and fx.alive]
+        emp_t     = [t for t in (env.turrets if env else []) if t._disabled_timer > 0]
+        jammers   = [d for d in swarm.drones if d.alive and d.drone_type == "jammer"]
+        fx_rows   = []
+        if smoke_fx:
+            fx_rows.append(f"SMOKE ×{len(smoke_fx)}  {max(f.ttl for f in smoke_fx):.1f}s")
+        if emp_t:
+            fx_rows.append(f"EMP ×{len(emp_t)}  {max(t._disabled_timer for t in emp_t):.1f}s")
+        if jammers and phase in ("SUPPRESSION", "SATURATION"):
+            fx_rows.append(f"JAMMER ×{len(jammers)}")
+
+        lh, pad, pw = 17, 8, 176
+        banner_h    = 26
+        data_rows = [
+            ("FPS",    f"{fps:.0f}" + ("  ■ PAUSE" if paused else ""), C_HUD_VAL),
+            ("FORM",   swarm._formation.mode,                           C_HUD_VAL),
+            ("RELAY",  rel_str,                                         rel_col),
+            ("CONV",   conv_str,                                        C_HUD_VAL),
+            ("DRONES", f"{swarm.alive_count} / {config.NUM_DRONES}",   C_HUD_VAL),
+            ("SPEED",  f"{config.MAX_SPEED:.1f}",                      C_HUD_VAL),
+            ("SEP",    f"{w['separation']:.1f}",                        C_HUD_VAL),
+            ("ALN",    f"{w['alignment']:.1f}",                         C_HUD_VAL),
+            ("COH",    f"{w['cohesion']:.1f}",                          C_HUD_VAL),
+            ("REL",    f"{w['relay']:.1f}",                             C_HUD_VAL),
         ]
-        lh, pad, pw = 18, 9, 168
-        ph  = pad * 2 + len(rows) * lh
+        sep_h = 5 if fx_rows else 0
+        ph = pad * 2 + banner_h + len(data_rows) * lh + sep_h + len(fx_rows) * lh
+
         pnl = pygame.Surface((pw, ph), pygame.SRCALPHA)
         pnl.fill(C_HUD_BG)
         self._screen.blit(pnl, (6, 6))
         pygame.draw.rect(self._screen, C_HUD_BDR, (6, 6, pw, ph), 1)
-        for i, (label, val) in enumerate(rows):
-            y = 6 + pad + i * lh
+
+        # phase banner
+        bg_col = tuple(max(0, c // 4) for c in p_col)
+        ph_bg  = pygame.Surface((pw - 2, banner_h), pygame.SRCALPHA)
+        ph_bg.fill((*bg_col, 210))
+        self._screen.blit(ph_bg, (7, 7))
+        pygame.draw.line(self._screen, p_col, (7, 7 + banner_h), (6 + pw - 1, 7 + banner_h), 1)
+        ph_txt = self._font_lg.render(f"● {phase}", True, p_col)
+        self._screen.blit(ph_txt, (14, 7 + (banner_h - ph_txt.get_height()) // 2))
+
+        # data rows
+        y = 6 + pad + banner_h
+        for label, val, vcol in data_rows:
             self._screen.blit(self._font.render(label, True, C_HUD_LABEL), (14, y))
-            self._screen.blit(self._font.render(val,   True, C_HUD_VAL),   (82, y))
-        hints = ("[SPC]Pause [R]Reset [M]Phase [V]Conv [E]Editor [L]Lines [K]Kill "
-                 "[↑↓]Drones [+−]Speed [1-4/S+1-4]Weights [TAB]Debug [F11]Fullscreen")
+            self._screen.blit(self._font.render(val,   True, vcol),         (82, y))
+            y += lh
+
+        # active effects section
+        if fx_rows:
+            pygame.draw.line(self._screen, C_HUD_BDR, (10, y+2), (6+pw-8, y+2), 1)
+            y += sep_h
+            for txt in fx_rows:
+                s = self._font_sm.render(txt, True, (160, 210, 255))
+                self._screen.blit(s, (14, y))
+                y += lh
+
+        # bottom keybind bar (8 most-used + [H] for help)
+        hints = ("[SPC]Pause  [R]Reset  [M]Phase  [E]Editor  "
+                 "[K]Kill  [TAB]Debug  [V]Conv  [H]Help")
         hs = pygame.font.SysFont("monospace", 11).render(hints, True, (52, 65, 95))
-        self._screen.blit(hs, (6, config.WORLD_SIZE[1] - 15))
+        self._screen.blit(hs, (6, H - 15))
+
+    # ── full help overlay ─────────────────────────────────────────────────────
+    def _draw_help_overlay(self):
+        W, H = config.WORLD_SIZE
+        dim  = pygame.Surface((W, H), pygame.SRCALPHA)
+        dim.fill((0, 0, 10, 200))
+        self._screen.blit(dim, (0, 0))
+
+        groups = [
+            ("SIM", [
+                ("[SPC]",     "Pause / resume"),
+                ("[R]",       "Reset swarm"),
+                ("[M]",       "Advance mission phase"),
+                ("[V]",       "Toggle convergence"),
+                ("[K]",       "Kill random drone"),
+                ("[↑] [↓]",  "Add / remove 5 drones"),
+                ("[+] [-]",   "Speed ±0.2"),
+                ("[L]",       "Toggle relay lines"),
+                ("[F11]",     "Fullscreen toggle"),
+                ("[H]",       "Close this help"),
+            ]),
+            ("FORMATION WEIGHTS", [
+                ("[1] / [S+1]",  "Separation +/−0.1"),
+                ("[2] / [S+2]",  "Alignment  +/−0.1"),
+                ("[3] / [S+3]",  "Cohesion   +/−0.1"),
+                ("[4] / [S+4]",  "Relay      +/−0.1"),
+            ]),
+            ("EDITOR (press E to enter/exit)", [
+                ("[W]",      "Wall tool"),
+                ("[T]",      "Tree tool"),
+                ("[H]",      "Building tool"),
+                ("[B]",      "Base"),
+                ("[U]",      "Turret"),
+                ("[N]",      "Enemy Base"),
+                ("[Z]",      "Zone"),
+                ("[P]",      "Waypoint"),
+                ("[D]",      "Drag object"),
+                ("[X] / Del","Delete"),
+                ("[G]",      "Toggle grid"),
+                ("[Ctrl+S]", "Save environment"),
+                ("[Ctrl+O]", "Load environment"),
+            ]),
+            ("DEBUG", [
+                ("[TAB]",  "Toggle debug overlay"),
+                ("[E]",    "Open editor"),
+            ]),
+        ]
+
+        lh, pad = 16, 10
+        col_w   = 300
+        n_cols  = 2
+        # split groups into two columns
+        left_groups  = groups[:2]
+        right_groups = groups[2:]
+        max_left  = sum(len(b) + 2 for _, b in left_groups)
+        max_right = sum(len(b) + 2 for _, b in right_groups)
+        box_h = max(max_left, max_right) * lh + pad * 3 + 20
+        box_w = col_w * n_cols + pad * 3
+        x0    = (W - box_w) // 2
+        y0    = (H - box_h) // 2
+
+        box = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+        box.fill((10, 12, 28, 240))
+        self._screen.blit(box, (x0, y0))
+        pygame.draw.rect(self._screen, (80, 100, 160), (x0, y0, box_w, box_h), 2)
+
+        title = self._font_lg.render("KEYBIND REFERENCE", True, (140, 170, 230))
+        self._screen.blit(title, (x0 + (box_w - title.get_width()) // 2, y0 + pad))
+
+        def render_column(col_x, col_groups):
+            y = y0 + pad + 24
+            for section, binds in col_groups:
+                shdr = self._font_sm.render(f"── {section} ──", True, (90, 115, 170))
+                self._screen.blit(shdr, (col_x, y))
+                y += lh
+                for key, desc in binds:
+                    kt = self._font_sm.render(key, True, (155, 195, 255))
+                    dt = self._font_sm.render(desc, True, C_HUD_LABEL)
+                    self._screen.blit(kt, (col_x, y))
+                    self._screen.blit(dt, (col_x + 90, y))
+                    y += lh
+                y += lh // 2
+
+        render_column(x0 + pad, left_groups)
+        render_column(x0 + pad + col_w + pad, right_groups)
 
     # ── post-run end overlay ──────────────────────────────────────────────────
     def _tick_end_overlay(self, dt):
