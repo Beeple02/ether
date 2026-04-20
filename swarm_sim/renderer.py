@@ -506,10 +506,16 @@ class Renderer:
     def _draw_hud(self, fps, paused):
         w       = config.WEIGHTS
         mission = self.swarm._mission
+        t0 = self.swarm._t_zero
+        te = mission.total_elapsed
+        conv_str = ("OFF" if not config.CONVERGENCE_ENABLED
+                    else f"T-{max(0.0, t0 - te):.1f}s" if t0 is not None
+                    else "ON")
         rows = [
             ("FPS",    f"{fps:.0f}" + ("  ■ PAUSED" if paused else "")),
             ("PHASE",  mission.phase),
             ("FORM",   self.swarm._formation.mode),
+            ("CONV",   conv_str),
             ("DRONES", f"{self.swarm.alive_count} / {config.NUM_DRONES}"),
             ("SPEED",  f"{config.MAX_SPEED:.1f}"),
             ("SEP",    f"{w['separation']:.1f}"),
@@ -527,7 +533,7 @@ class Renderer:
             y = 6 + pad + i * lh
             self._screen.blit(self._font.render(label, True, C_HUD_LABEL), (14, y))
             self._screen.blit(self._font.render(val,   True, C_HUD_VAL),   (82, y))
-        hints = ("[SPC]Pause [R]Reset [M]Phase [E]Editor [L]Lines [K]Kill "
+        hints = ("[SPC]Pause [R]Reset [M]Phase [V]Conv [E]Editor [L]Lines [K]Kill "
                  "[↑↓]Drones [+−]Speed [1-4/S+1-4]Weights [TAB]Debug [F11]Fullscreen")
         hs = pygame.font.SysFont("monospace", 11).render(hints, True, (52, 65, 95))
         self._screen.blit(hs, (6, config.WORLD_SIZE[1] - 15))

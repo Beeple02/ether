@@ -397,27 +397,37 @@ class Agent:
 
     # FAST ─────────────────────────────────────────────────────────────────────
     def _tick_fast(self, context, environment, dt, phase, neighbors, formation_target):
-        conv = context.get("convergence_enabled", False)
-        if conv and phase in ("SATURATION", "PROSECUTION"):
-            target_center = context.get("target_center")
-            if target_center is not None:
-                angle = self._convergence_angle
-                radius = context.get("target_radius", 120.0)
-                entry  = target_center + np.array([np.cos(angle), np.sin(angle)]) * radius
-                t_zero = context.get("t_zero", 0.0)
-                now    = context.get("total_elapsed", 0.0)
-                remaining = max(0.01, t_zero - now)
-                d = np.linalg.norm(entry - self.position)
-                if remaining > 0:
-                    desired_speed = min(d / remaining, config.MAX_SPEED * self.speed_mult)
-                    if d > 5:
-                        self.velocity = normalize(entry - self.position) * desired_speed
-                        if environment:
-                            self.velocity += limit(environment.repulsion_force(self.position) * 2.0,
-                                                   config.MAX_SPEED * 0.5)
-                        self.velocity = limit(self.velocity, config.MAX_SPEED * self.speed_mult)
-                        return True
-        return False
+        if not context.get("convergence_enabled", False):
+            return False
+        if phase not in ("SATURATION", "PROSECUTION"):
+            return False
+        target_center = context.get("target_center")
+        if target_center is None:
+            return False
+
+        t_zero    = context.get("t_zero")
+        now       = context.get("total_elapsed", 0.0)
+        remaining = (t_zero - now) if t_zero is not None else 0.0
+        angle     = self._convergence_angle
+        radius    = context.get("target_radius", 120.0)
+        entry     = target_center + np.array([np.cos(angle), np.sin(angle)]) * radius
+
+        if remaining > 0.5:
+            # Pre-T-zero: pace speed so every drone arrives at entry point at T-zero.
+            # Drones far away run near full speed; close drones slow to synchronise.
+            d = float(np.linalg.norm(entry - self.position))
+            desired_speed = min(d / remaining, config.MAX_SPEED * self.speed_mult)
+            if d > 5:
+                self.velocity = normalize(entry - self.position) * desired_speed
+                if environment:
+                    self.velocity += limit(environment.repulsion_force(self.position) * 2.0,
+                                           config.MAX_SPEED * 0.5)
+                self.velocity = limit(self.velocity, config.MAX_SPEED * self.speed_mult)
+                return True
+
+        # Post-T-zero (or no t_zero set): flow directly into target at full speed.
+        self._move_toward(target_center, environment)
+        return True
 
     # HEAVY ────────────────────────────────────────────────────────────────────
     def _tick_heavy(self, context, environment, dt, phase):
@@ -426,6 +436,26 @@ class Agent:
         target_center = context.get("target_center")
         if target_center is None:
             return False
+
+        # Convergence during PROSECUTION — same timing logic as FAST drones.
+        if context.get("convergence_enabled", False) and phase == "PROSECUTION":
+            t_zero    = context.get("t_zero")
+            now       = context.get("total_elapsed", 0.0)
+            remaining = (t_zero - now) if t_zero is not None else 0.0
+            if remaining > 0.5:
+                angle  = self._convergence_angle
+                radius = context.get("target_radius", 120.0)
+                entry  = target_center + np.array([np.cos(angle), np.sin(angle)]) * radius
+                d = float(np.linalg.norm(entry - self.position))
+                desired_speed = min(d / remaining, config.MAX_SPEED * self.speed_mult)
+                if d > 5:
+                    self.velocity = normalize(entry - self.position) * desired_speed
+                    if environment:
+                        self.velocity += limit(environment.repulsion_force(self.position) * 2.0,
+                                               config.MAX_SPEED * 0.5)
+                    self.velocity = limit(self.velocity, config.MAX_SPEED * self.speed_mult)
+                    return True
+
         self._move_toward(target_center, environment)
         return True
 

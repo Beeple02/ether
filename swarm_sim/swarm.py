@@ -99,10 +99,11 @@ class Swarm:
         self._enemy_delay       = (env_cfg["spawn_delay_seconds"]
                                    if env_cfg else config.ENEMY_SPAWN_DELAY)
 
-        # assign per-FAST convergence angles
-        fast_drones = [d for d in self.drones if d.drone_type == "fast"]
-        for k, d in enumerate(fast_drones):
-            d._convergence_angle = 2 * np.pi * k / max(len(fast_drones), 1)
+        # assign convergence angles evenly across FAST + HEAVY (360° arc)
+        conv_drones = [d for d in self.drones if d.drone_type in ("fast", "heavy")]
+        for k, d in enumerate(conv_drones):
+            d._convergence_angle = 2 * np.pi * k / max(len(conv_drones), 1)
+        self._t_zero = None  # fixed T-zero; set once on SATURATION entry
 
         # assign succession ranks 1..N to relay_backup drones
         backups = [d for d in self.drones if d.drone_type == "relay_backup"]
@@ -145,6 +146,15 @@ class Swarm:
         self._update_signals()
         self._update_noflyzone()
         self._update_enemy_spawn(dt)
+
+        # convergence T-zero: fixed once per SATURATION/PROSECUTION window so
+        # "remaining" decreases and drones actually synchronise their arrival.
+        _phase = self._mission.phase
+        if _phase in ("SATURATION", "PROSECUTION"):
+            if self._t_zero is None:
+                self._t_zero = self._mission.total_elapsed + config.CONVERGENCE_T_LEAD
+        else:
+            self._t_zero = None
 
         # Exclude promoted drones (_is_relay) from the flock loop — they are
         # moved by _update_relay() and drawn via _draw_relay(), not as drones.
@@ -194,7 +204,7 @@ class Swarm:
             "events":              [],
             "n_interceptors":      n_interceptors,
             "convergence_enabled": config.CONVERGENCE_ENABLED,
-            "t_zero":              self._mission.total_elapsed + config.CONVERGENCE_T_LEAD,
+            "t_zero":              self._t_zero,
             "total_elapsed":       self._mission.total_elapsed,
         }
 

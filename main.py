@@ -53,6 +53,8 @@ def handle_events(swarm, renderer, ed_renderer, editor, state):
             renderer.debug_mode = not renderer.debug_mode
         elif key == pygame.K_m:
             swarm.advance_phase()
+        elif key == pygame.K_v:
+            config.CONVERGENCE_ENABLED = not config.CONVERGENCE_ENABLED
         elif key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4):
             wkeys = ["separation", "alignment", "cohesion", "relay"]
             wk    = wkeys[key - pygame.K_1]
