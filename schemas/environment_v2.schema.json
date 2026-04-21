@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "environment_v2.schema.json",
+  "title": "Relay-Swarm Environment v2",
+  "description": "Sim environment file. All fields except meta and world are optional with safe defaults. V1 files (no meta/world) also load unchanged.",
+  "type": "object",
+  "properties": {
+    "meta": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer", "minimum": 1 },
+        "units":   { "type": "string", "enum": ["world_units", "meters"] }
+      }
+    },
+    "world": {
+      "type": "object",
+      "properties": {
+        "width":  { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "depth":  { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "buildings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rect"],
+        "properties": {
+          "rect":   {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 4,
+            "maxItems": 4,
+            "description": "[x, y, width, height] in world units"
+          },
+          "height": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "default": 60.0,
+            "description": "Building height in world units (Z axis)"
+          }
+        }
+      }
+    },
+    "walls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["start", "end"],
+        "properties": {
+          "start":  { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 },
+          "end":    { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 },
+          "height": { "type": "number", "exclusiveMinimum": 0, "default": 50.0 }
+        }
+      }
+    },
+    "trees": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["position"],
+        "properties": {
+          "position": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 },
+          "radius":   { "type": "number", "exclusiveMinimum": 0, "default": 18 }
+        }
+      }
+    },
+    "zones": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rect", "type"],
+        "properties": {
+          "rect":  { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
+          "type":  { "type": "string", "enum": ["TARGET", "NOFLYZONE"] },
+          "z_min": { "type": "number", "minimum": 0, "default": 0 },
+          "z_max": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    "base": {
+      "type": ["object", "null"],
+      "properties": {
+        "position": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 }
+      }
+    },
+    "enemy_base": {
+      "type": ["object", "null"],
+      "properties": {
+        "position": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 }
+      }
+    },
+    "turrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["position"],
+        "properties": {
+          "position":  { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 },
+          "range":     { "type": "number", "exclusiveMinimum": 0 },
+          "fire_rate": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    "waypoints": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "type": "number" },
+        "minItems": 2,
+        "maxItems": 3
+      }
+    },
+    "enemy_swarm": {
+      "type": ["object", "null"],
+      "description": "Per-scenario enemy swarm override. Null → use config defaults."
+    }
+  }
+}

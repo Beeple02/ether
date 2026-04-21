@@ -174,6 +174,45 @@ MIN_SAFE_DISTANCE = 8    # px — collision avoidance triggers below this
 GEOFENCE_MARGIN   = 25   # px from boundary
 GEOFENCE_FORCE    = 2.0  # force magnitude at boundary
 
+# ── 3D simulation / rendering flags ─────────────────────────────────────────
+# CRITICAL: these flags are orthogonal — never gate sim math on RENDER_3D.
+# SIM_3D is startup-only; never toggle it live mid-run.
+RENDER_3D = False    # camera/projection + 3D visuals only
+SIM_3D    = False    # 3D vectors, LOS, projectiles, altitude dynamics
+
+WORLD_DEPTH = 400.0  # Z extent of sim world (world units)
+
+# Altitude band per airframe (min_z, max_z) in world units.
+ALTITUDE_BAND = {
+    "small":  ( 70, 120),
+    "medium": ( 50,  90),
+    "large":  ( 90, 150),
+    "relay":  (100, 140),
+}
+
+# Cruising altitude by drone type (midpoint of band, used for formation Z).
+ALTITUDE_TIERS = {
+    "fast":             95,
+    "heavy":            70,
+    "recon":            120,
+    "loiter":           70,
+    "relay":            120,
+    "relay_backup":     120,
+    "interceptor_net":  95,
+    "interceptor_fuse": 95,
+    "smokescreen":      85,
+    "decoy":            95,
+    "emp":              100,
+    "jammer":           80,
+    "mesh_relay":       110,
+    "hunter":           90,
+    "kamikaze":         80,
+}
+
+# When False, signal propagation uses XY-only distance (doctrinal default).
+# Set True to make altitude separation affect signal range.
+SIGNAL_USES_3D_DISTANCE = False
+
 # ── metrics ──────────────────────────────────────────────────────────────────
 TARGET_REACH_FRACTION = 0.5
 END_OVERLAY_SECONDS   = 4.0

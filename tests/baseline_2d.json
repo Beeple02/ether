@@ -1,0 +1,19 @@
+{
+  "seed": 7,
+  "max_ticks": 7200,
+  "stats": {
+    "end_reason": "manual",
+    "relay_survived": true,
+    "target_reached": false,
+    "drones_survived": 80,
+    "drones_total": 80,
+    "phase_reached": "TRANSIT",
+    "relay_successions": 0,
+    "intercepted_projectiles": 0,
+    "intercepted_enemy_drones": 0,
+    "emp_turrets_disabled": 0,
+    "smokescreen_deployments": 0,
+    "convergence_used": false,
+    "enemy_swarm_eliminated": false
+  }
+}

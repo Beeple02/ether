@@ -14,16 +14,20 @@ ZONE_REPULSION = {
 
 
 class Wall:
-    def __init__(self, start, end):
-        self.start = np.array(start, dtype=float)
-        self.end   = np.array(end,   dtype=float)
+    DEFAULT_HEIGHT = 50.0
+
+    def __init__(self, start, end, height=None):
+        self.start  = np.array(start, dtype=float)
+        self.end    = np.array(end,   dtype=float)
+        self.height = float(height) if height is not None else self.DEFAULT_HEIGHT
 
     def to_dict(self):
-        return {"start": self.start.tolist(), "end": self.end.tolist()}
+        return {"start": self.start.tolist(), "end": self.end.tolist(),
+                "height": self.height}
 
     @classmethod
     def from_dict(cls, d):
-        return cls(d["start"], d["end"])
+        return cls(d["start"], d["end"], d.get("height"))
 
     def closest_point(self, pos):
         ab = self.end - self.start
@@ -45,15 +49,18 @@ class Tree:
 
 
 class Building:
-    def __init__(self, rect):
-        self.rect = tuple(float(v) for v in rect)
+    DEFAULT_HEIGHT = 60.0
+
+    def __init__(self, rect, height=None):
+        self.rect   = tuple(float(v) for v in rect)
+        self.height = float(height) if height is not None else self.DEFAULT_HEIGHT
 
     def to_dict(self):
-        return {"rect": list(self.rect)}
+        return {"rect": list(self.rect), "height": self.height}
 
     @classmethod
     def from_dict(cls, d):
-        return cls(d["rect"])
+        return cls(d["rect"], d.get("height"))
 
     def closest_point(self, pos):
         x, y, w, h = self.rect
@@ -66,16 +73,22 @@ class Building:
 
 
 class Zone:
-    def __init__(self, rect, zone_type="TARGET"):
+    def __init__(self, rect, zone_type="TARGET", z_min=None, z_max=None):
         self.rect      = tuple(float(v) for v in rect)
         self.zone_type = zone_type
+        self.z_min     = float(z_min) if z_min is not None else 0.0
+        self.z_max     = float(z_max) if z_max is not None else None  # None → WORLD_DEPTH
 
     def to_dict(self):
-        return {"rect": list(self.rect), "type": self.zone_type}
+        d = {"rect": list(self.rect), "type": self.zone_type,
+             "z_min": self.z_min}
+        if self.z_max is not None:
+            d["z_max"] = self.z_max
+        return d
 
     @classmethod
     def from_dict(cls, d):
-        return cls(d["rect"], d["type"])
+        return cls(d["rect"], d["type"], d.get("z_min"), d.get("z_max"))
 
     def contains(self, pos):
         x, y, w, h = self.rect
@@ -204,17 +217,40 @@ class Environment:
         return force
 
     def has_line_of_sight(self, a, b, smoke_clouds=None):
-        """Blocked by walls, buildings, NOFLYZONE, and optionally smoke clouds."""
+        """Blocked by walls, buildings, NOFLYZONE, and optionally smoke clouds.
+
+        When SIM_3D=True and both positions are 3D, building/wall height is
+        considered: if both endpoints are above the obstacle's height, the
+        obstacle does not block LOS (drones can fly over it).
+        The 2D callers pass 2-element arrays and always use the original logic.
+        """
+        from . import config as _cfg
+        use_3d = _cfg.SIM_3D and len(a) == 3 and len(b) == 3
+        a2 = a[:2]
+        b2 = b[:2]
+
         for wall in self.walls:
-            if segments_intersect(a, b, wall.start, wall.end):
+            ws = wall.start[:2] if len(wall.start) == 3 else wall.start
+            we = wall.end[:2]   if len(wall.end)   == 3 else wall.end
+            if segments_intersect(a2, b2, ws, we):
+                if use_3d:
+                    # Skip block if both endpoints are above wall height
+                    if a[2] > wall.height and b[2] > wall.height:
+                        continue
                 return False
+
         for bld in self.buildings:
-            if segment_rect_intersect(a, b, bld.rect):
+            if segment_rect_intersect(a2, b2, bld.rect):
+                if use_3d:
+                    if a[2] > bld.height and b[2] > bld.height:
+                        continue
                 return False
+
         for zone in self.zones:
             if zone.zone_type == "NOFLYZONE":
-                if segment_rect_intersect(a, b, zone.rect):
+                if segment_rect_intersect(a2, b2, zone.rect):
                     return False
+
         if smoke_clouds:
             for sc in smoke_clouds:
                 if sc.alive and sc.blocks_los(a, b):
@@ -223,15 +259,19 @@ class Environment:
 
     def save(self, path):
         import os
+        from . import config as _cfg
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        W, H = _cfg.WORLD_SIZE
         data = {
-            "walls":      [w.to_dict() for w in self.walls],
-            "trees":      [t.to_dict() for t in self.trees],
-            "buildings":  [b.to_dict() for b in self.buildings],
-            "zones":      [z.to_dict() for z in self.zones],
-            "waypoints":  [list(p)     for p in self.waypoints],
-            "base":       self.base.to_dict()       if self.base       else None,
-            "turrets":    [t.to_dict() for t in self.turrets],
+            "meta":      {"version": 2, "units": "world_units"},
+            "world":     {"width": W, "height": H, "depth": _cfg.WORLD_DEPTH},
+            "walls":     [w.to_dict() for w in self.walls],
+            "trees":     [t.to_dict() for t in self.trees],
+            "buildings": [b.to_dict() for b in self.buildings],
+            "zones":     [z.to_dict() for z in self.zones],
+            "waypoints": [list(p)     for p in self.waypoints],
+            "base":      self.base.to_dict()       if self.base       else None,
+            "turrets":   [t.to_dict() for t in self.turrets],
             "enemy_base":        self.enemy_base.to_dict() if self.enemy_base else None,
             "enemy_swarm":       self.enemy_swarm_config,
         }
