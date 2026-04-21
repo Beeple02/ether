@@ -35,8 +35,8 @@ from .effects import SmokeCloud, EMPBlast, NetDeploy, Explosion
 
 # Ground grid + shadow palette
 _SHADOW_COLOR = (0, 0, 0)
-_GRID_COLOR   = (26, 32, 48)
-_GRID_STEP    = 80   # world units between grid lines
+_GRID_COLOR   = (36, 46, 68)
+_GRID_STEP    = 100  # world units between grid lines
 _HORIZON_COL  = (24, 28, 42)
 
 
@@ -307,6 +307,64 @@ class Renderer3D(Renderer):
         _draw_pentagon(self._screen, (255, 60, 60), (sx, sy), 13, width=2)
         txt = self._font_sm.render("ENEMY BASE", True, (255, 80, 80))
         self._screen.blit(txt, (sx - txt.get_width() // 2, sy + 17))
+
+    # ── debug overlay (project 3D positions to screen 2D before parent draw) ──
+
+    def _draw_debug(self, env):
+        if not config.SIM_3D:
+            super()._draw_debug(env)
+            return
+        # The parent _draw_debug uses drone.position.astype(int) as pygame
+        # screen coords. In SIM_3D mode positions are 3D; temporarily replace
+        # them with camera-projected 2D screen coords so the parent code works.
+        agents = (list(self.swarm.drones) + list(self.swarm.enemy_drones)
+                  + ([self.swarm.relay] if self.swarm.relay else []))
+        saved_pos = {id(a): a.position for a in agents}
+        saved_vel = {id(a): a.velocity for a in agents}
+        saved_nbr = {id(a): getattr(a, 'last_neighbor_positions', [])
+                     for a in agents}
+
+        for a in agents:
+            sp = np.array(self._w2s(a.position), dtype=float)
+            a.position = sp
+            # velocity: keep only XY components so arrow math works
+            a.velocity = a.velocity[:2].copy() if len(a.velocity) == 3 else a.velocity.copy()
+            if hasattr(a, 'last_neighbor_positions') and a.last_neighbor_positions:
+                a.last_neighbor_positions = [
+                    np.array(self._w2s(p), dtype=float)
+                    for p in saved_nbr[id(a)]
+                ]
+
+        # Project relay path nodes (2D world → 2D screen)
+        saved_path = self.swarm._relay_path
+        if saved_path:
+            self.swarm._relay_path = [
+                np.array(self._g2s(float(p[0]), float(p[1])), dtype=float)
+                for p in saved_path
+            ]
+        saved_pt = self.swarm._path_target
+        if saved_pt is not None:
+            self.swarm._path_target = np.array(
+                self._g2s(float(saved_pt[0]), float(saved_pt[1])), dtype=float)
+
+        # Project threat positions
+        saved_threats = getattr(self.swarm, '_last_threats', [])
+        self.swarm._last_threats = [
+            dict(t, pos=np.array(self._w2s(t['pos']), dtype=float))
+            for t in saved_threats
+        ]
+
+        try:
+            super()._draw_debug(env)
+        finally:
+            for a in agents:
+                a.position = saved_pos[id(a)]
+                a.velocity = saved_vel[id(a)]
+                if id(a) in saved_nbr:
+                    a.last_neighbor_positions = saved_nbr[id(a)]
+            self.swarm._relay_path    = saved_path
+            self.swarm._path_target   = saved_pt
+            self.swarm._last_threats  = saved_threats
 
     # ── overridden draw methods ───────────────────────────────────────────────
 

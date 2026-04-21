@@ -26,7 +26,7 @@ class Camera:
         self.sw = sw
         self.sh = sh
         # Oblique projection parameters
-        self.y_squeeze: float = 0.5   # world-Y compression on screen
+        self.y_squeeze: float = 0.4   # world-Y compression on screen (lower = steeper tilt)
         self.z_squeeze: float = 1.0   # world-Z lift on screen
         self.scale: float     = 1.0   # world-units per pixel
         # Pivot: the world point that maps to the screen centre

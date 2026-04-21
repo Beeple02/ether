@@ -720,24 +720,25 @@ class Swarm:
 
                 nearest = None
                 nd = turret.range
+                tp2 = turret.position[:2]
                 for t in candidates:
-                    d = float(np.linalg.norm(t.position - turret.position))
+                    d = float(np.linalg.norm(t.position[:2] - tp2))
                     if d < nd:
                         nd = d
                         nearest = t
                 if nearest is None:
                     continue
 
-                # jammer miss chance
+                # jammer miss chance (XY distance only — turrets are ground-based)
                 jammed = any(
-                    np.linalg.norm(jp - turret.position) <= config.JAMMER_RANGE
+                    np.linalg.norm(jp[:2] - tp2) <= config.JAMMER_RANGE
                     for jp in jammer_pos
                 )
                 if jammed and np.random.random() < config.JAMMER_MISS_CHANCE:
                     turret._cooldown = 1.0 / max(turret.fire_rate, 1e-3)
                     continue
 
-                direction = normalize(nearest.position - turret.position)
+                direction = normalize(nearest.position[:2] - tp2)
                 self.projectiles.append(Projectile(turret.position.copy(),
                                                    direction * speed_per_frame))
                 turret._cooldown = 1.0 / max(turret.fire_rate, 1e-3)
@@ -758,8 +759,9 @@ class Swarm:
                 continue
 
             # smoke cloud miss chance
+            pp2 = p.position[:2]
             in_smoke = any(
-                np.linalg.norm(p.position - sc.position) < sc.radius
+                np.linalg.norm(pp2 - sc.position[:2]) < sc.radius
                 for sc in smoke_clouds
             )
             if in_smoke and np.random.random() < config.SMOKESCREEN_MISS_CH:
@@ -768,14 +770,14 @@ class Swarm:
 
             hit = False
             for d in self.drones:
-                if d.alive and np.linalg.norm(p.position - d.position) < config.DRONE_HIT_RADIUS:
+                if d.alive and np.linalg.norm(pp2 - d.position[:2]) < config.DRONE_HIT_RADIUS:
                     d.alive = False
                     p.alive = False
                     self.effects.append(Explosion(d.position.copy(), 12, (255, 120, 30)))
                     hit = True
                     break
             if not hit and self.relay.alive:
-                if np.linalg.norm(p.position - self.relay.position) < config.RELAY_HIT_RADIUS:
+                if np.linalg.norm(pp2 - self.relay.position[:2]) < config.RELAY_HIT_RADIUS:
                     self.relay.alive = False
                     p.alive = False
                     self.effects.append(Explosion(self.relay.position.copy(), 20, (255, 60, 20)))

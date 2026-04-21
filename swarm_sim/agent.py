@@ -290,26 +290,28 @@ class Agent:
         threats      = context.setdefault("threats", [])
         smoke_clouds = context.get("smoke_clouds", [])
 
+        my_xy = self.position[:2]
         turrets = context.get("turrets", [])
         for t in turrets:
-            d    = float(np.linalg.norm(t.position - self.position))
+            d    = float(np.linalg.norm(t.position[:2] - my_xy))
             eff  = (config.RECON_RANGE / 2
-                    if any(_near_segment(sc.position, self.position, t.position, sc.radius)
+                    if any(_near_segment(sc.position[:2], my_xy, t.position[:2], sc.radius)
                            for sc in smoke_clouds)
                     else config.RECON_RANGE)
             if d < eff:
                 threats.append({"kind": "TURRET_THREAT", "pos": t.position.copy(), "obj": t})
 
         # projectile proximity is relay-centric (not blocked by smoke — already heading in)
+        rp_xy = relay_pos[:2]
         for p in context.get("projectiles", []):
-            if np.linalg.norm(p.position - relay_pos) < config.RECON_PROJ_ALERT:
+            if np.linalg.norm(p.position[:2] - rp_xy) < config.RECON_PROJ_ALERT:
                 threats.append({"kind": "PROJECTILE_THREAT", "pos": p.position.copy(), "obj": p})
 
         for e in context.get("enemy_drones", []):
             if e.alive:
-                d   = float(np.linalg.norm(e.position - self.position))
+                d   = float(np.linalg.norm(e.position[:2] - my_xy))
                 eff = (config.RECON_RANGE / 2
-                       if any(_near_segment(sc.position, self.position, e.position, sc.radius)
+                       if any(_near_segment(sc.position[:2], my_xy, e.position[:2], sc.radius)
                               for sc in smoke_clouds)
                        else config.RECON_RANGE)
                 if d < eff:
