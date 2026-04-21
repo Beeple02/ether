@@ -52,3 +52,36 @@ def segment_rect_intersect(a, b, rect):
         if segments_intersect(a, b, corners[i], corners[(i + 1) % 4]):
             return True
     return False
+
+
+def rect_t_range(a2, b2, rect):
+    """Parametric (t_enter, t_exit) where segment a2→b2 is inside rect.
+
+    Uses Liang-Barsky clipping.  Returns (t_enter, t_exit) with
+    0 ≤ t_enter < t_exit ≤ 1 when the segment crosses the rectangle's
+    interior, or None when there is no crossing.
+
+    Callers use this to find the z-height of a 3D segment at the point(s)
+    where its XY projection crosses a building footprint.
+    """
+    x, y, w, h = rect
+    dx = b2[0] - a2[0]
+    dy = b2[1] - a2[1]
+    t_min = 0.0
+    t_max = 1.0
+
+    for p, q in ((-dx, a2[0] - x), (dx, x + w - a2[0]),
+                 (-dy, a2[1] - y), (dy, y + h - a2[1])):
+        if p == 0.0:
+            if q < 0.0:
+                return None          # parallel and outside this edge
+        else:
+            t = q / p
+            if p < 0.0:
+                t_min = max(t_min, t)
+            else:
+                t_max = min(t_max, t)
+
+    if t_min > t_max:
+        return None
+    return (t_min, t_max)

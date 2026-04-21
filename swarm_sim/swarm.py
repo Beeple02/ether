@@ -335,8 +335,14 @@ class Swarm:
         # Pass 0 — direct relay→drone distance + LOS (preserved exactly when
         # mesh is disabled, so MESH_SIGNAL_ENABLED=False is byte-for-byte equivalent
         # to the old code path).
+        # When SIM_3D=True and SIGNAL_USES_3D_DISTANCE=False (the default),
+        # signal range uses XY-only distance so altitude separation does not
+        # artificially weaken signals — doctrinal continuity is preserved.
         for d in alive:
-            dist = float(np.linalg.norm(d.position - relay_pos))
+            if config.SIM_3D and not config.SIGNAL_USES_3D_DISTANCE:
+                dist = float(np.linalg.norm(d.position[:2] - relay_pos[:2]))
+            else:
+                dist = float(np.linalg.norm(d.position - relay_pos))
             if dist <= R:
                 s = 1.0
             elif dist >= R2:

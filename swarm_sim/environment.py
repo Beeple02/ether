@@ -1,6 +1,6 @@
 import json
 import numpy as np
-from .physics import normalize, segments_intersect, segment_rect_intersect
+from .physics import normalize, segments_intersect, segment_rect_intersect, rect_t_range
 
 ZONE_TYPES = ["TARGET", "NOFLYZONE"]
 ZONE_COLORS = {
@@ -231,10 +231,17 @@ class Environment:
     def has_line_of_sight(self, a, b, smoke_clouds=None):
         """Blocked by walls, buildings, NOFLYZONE, and optionally smoke clouds.
 
-        When SIM_3D=True and both positions are 3D, building/wall height is
-        considered: if both endpoints are above the obstacle's height, the
-        obstacle does not block LOS (drones can fly over it).
-        The 2D callers pass 2-element arrays and always use the original logic.
+        2D mode (SIM_3D=False or 2-element arrays):
+            Original pure-XY logic — unchanged.
+
+        3D mode (SIM_3D=True, 3-element arrays):
+            Walls: both endpoints above wall.height → clear (linear interpolation
+              guarantees the entire segment stays above, so no intersection).
+            Buildings: use rect_t_range (Liang-Barsky) to find the parametric
+              range where the XY projection crosses the footprint.  Interpolate
+              the segment's z at that crossing range.  If the minimum z at the
+              crossing is >= building.height the ray passes over the roof → clear.
+            NFZ: always blocks regardless of altitude.
         """
         from . import config as _cfg
         use_3d = _cfg.SIM_3D and len(a) == 3 and len(b) == 3
@@ -246,16 +253,29 @@ class Environment:
             we = wall.end[:2]   if len(wall.end)   == 3 else wall.end
             if segments_intersect(a2, b2, ws, we):
                 if use_3d:
-                    # Skip block if both endpoints are above wall height
-                    if a[2] > wall.height and b[2] > wall.height:
+                    # Linear interpolation: if both z values are above the wall,
+                    # every intermediate z is also above → ray clears the wall.
+                    if a[2] >= wall.height and b[2] >= wall.height:
                         continue
                 return False
 
         for bld in self.buildings:
             if segment_rect_intersect(a2, b2, bld.rect):
                 if use_3d:
-                    if a[2] > bld.height and b[2] > bld.height:
-                        continue
+                    t_range = rect_t_range(a2, b2, bld.rect)
+                    if t_range is not None:
+                        t0, t1   = t_range
+                        az, bz   = float(a[2]), float(b[2])
+                        # z at entry and exit of the building footprint crossing
+                        z_enter  = az + t0 * (bz - az)
+                        z_exit   = az + t1 * (bz - az)
+                        z_min    = min(z_enter, z_exit)
+                        if z_min >= bld.height:
+                            continue   # ray clears roof at every crossing point
+                    else:
+                        # segment starts/ends inside footprint; use endpoint check
+                        if a[2] >= bld.height and b[2] >= bld.height:
+                            continue
                 return False
 
         for zone in self.zones:
