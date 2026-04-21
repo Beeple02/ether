@@ -177,8 +177,8 @@ GEOFENCE_FORCE    = 2.0  # force magnitude at boundary
 # ── 3D simulation / rendering flags ─────────────────────────────────────────
 # CRITICAL: these flags are orthogonal — never gate sim math on RENDER_3D.
 # SIM_3D is startup-only; never toggle it live mid-run.
-RENDER_3D = False    # camera/projection + 3D visuals only
-SIM_3D    = False    # 3D vectors, LOS, projectiles, altitude dynamics
+RENDER_3D = True     # camera/projection + 3D visuals only
+SIM_3D    = True     # 3D vectors, LOS, projectiles, altitude dynamics
 
 WORLD_DEPTH = 400.0  # Z extent of sim world (world units)
 
