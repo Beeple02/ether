@@ -30,9 +30,12 @@ class Wall:
         return cls(d["start"], d["end"], d.get("height"))
 
     def closest_point(self, pos):
-        ab = self.end - self.start
-        t  = np.dot(pos - self.start, ab) / (np.dot(ab, ab) + 1e-8)
-        return self.start + np.clip(t, 0, 1) * ab
+        s = self.start[:2]
+        e = self.end[:2]
+        p = pos[:2]
+        ab = e - s
+        t  = np.dot(p - s, ab) / (np.dot(ab, ab) + 1e-8)
+        return s + np.clip(t, 0, 1) * ab
 
 
 class Tree:
@@ -70,6 +73,10 @@ class Building:
     def contains(self, pos):
         x, y, w, h = self.rect
         return x <= pos[0] <= x + w and y <= pos[1] <= y + h
+
+    def contains_2d(self, pos2):
+        x, y, w, h = self.rect
+        return x <= pos2[0] <= x + w and y <= pos2[1] <= y + h
 
 
 class Zone:
@@ -172,35 +179,38 @@ class Environment:
 
     def repulsion_force(self, pos):
         import swarm_sim.config as cfg
-        force  = np.zeros(2)
+        # All geometry is ground-based (XY plane), so work in 2D regardless of
+        # pos dimensionality and zero-pad the result for 3D callers.
+        pos2   = pos[:2]
+        force2 = np.zeros(2)
         half_r = cfg.PERCEPTION_RADIUS / 2
 
         for wall in self.walls:
-            cp   = wall.closest_point(pos)
-            diff = pos - cp
+            cp   = wall.closest_point(pos2)
+            diff = pos2 - cp
             d    = np.linalg.norm(diff)
             if 0 < d < half_r:
-                force += normalize(diff) * (half_r - d) / half_r
+                force2 += normalize(diff) * (half_r - d) / half_r
 
         for tree in self.trees:
-            diff = pos - tree.position
+            diff = pos2 - tree.position[:2]
             d    = np.linalg.norm(diff)
             eff  = tree.radius + half_r * 0.6
             if d < eff:
                 if d < 0.5:
                     diff = np.random.uniform(-1, 1, 2)
                     d    = max(np.linalg.norm(diff), 1e-4)
-                force += normalize(diff) * (eff - d) / eff * 2.5
+                force2 += normalize(diff) * (eff - d) / eff * 2.5
 
         for bld in self.buildings:
-            cp   = bld.closest_point(pos)
-            diff = pos - cp
+            cp   = bld.closest_point(pos2)
+            diff = pos2 - cp
             d    = np.linalg.norm(diff)
             if d < half_r:
                 if d < 0.5:
                     diff = np.random.uniform(-1, 1, 2)
                     d    = max(np.linalg.norm(diff), 1e-4)
-                force += normalize(diff) * (half_r - d) / half_r * 2.5
+                force2 += normalize(diff) * (half_r - d) / half_r * 2.5
 
         for zone in self.zones:
             strength = ZONE_REPULSION.get(zone.zone_type, 0)
@@ -208,13 +218,15 @@ class Environment:
                 continue
             x, y, w, h = zone.rect
             cx, cy = x + w / 2, y + h / 2
-            diff   = pos - np.array([cx, cy])
+            diff   = pos2 - np.array([cx, cy])
             d      = np.linalg.norm(diff)
             diag   = (w ** 2 + h ** 2) ** 0.5 / 2
             if d < diag + half_r:
-                force += normalize(diff) * strength * max(0, (diag + half_r - d) / (diag + half_r))
+                force2 += normalize(diff) * strength * max(0, (diag + half_r - d) / (diag + half_r))
 
-        return force
+        if len(pos) == 3:
+            return np.array([force2[0], force2[1], 0.0])
+        return force2
 
     def has_line_of_sight(self, a, b, smoke_clouds=None):
         """Blocked by walls, buildings, NOFLYZONE, and optionally smoke clouds.

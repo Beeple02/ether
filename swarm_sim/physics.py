@@ -4,7 +4,7 @@ import numpy as np
 def normalize(v):
     n = np.linalg.norm(v)
     if n < 1e-8:
-        return np.zeros(2)
+        return np.zeros_like(v)
     return v / n
 
 

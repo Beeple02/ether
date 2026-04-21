@@ -57,28 +57,56 @@ class RunStats:
 
 
 class _SpatialGrid:
-    """Bucket agents into cells so neighbor queries are O(k) instead of O(n)."""
-    def __init__(self, agents, cell_size):
-        self._c    = float(cell_size)
+    """Bucket agents into cells so neighbor queries are O(k) instead of O(n).
+
+    Supports 2D and 3D positions automatically.  In 3D mode the Z cell size
+    is set to twice the altitude band width (coarser bucketing in Z, since
+    drones in the same altitude tier cluster tightly).
+    """
+    def __init__(self, agents, cell_size, z_cell_size=None):
+        self._c  = float(cell_size)
+        self._cz = float(z_cell_size) if z_cell_size else float(cell_size)
+        self._3d = config.SIM_3D
         self._grid = {}
         for a in agents:
-            key = (int(a.position[0] / self._c), int(a.position[1] / self._c))
+            key = self._key(a.position)
             self._grid.setdefault(key, []).append(a)
+
+    def _key(self, pos):
+        if self._3d and len(pos) == 3:
+            return (int(pos[0] / self._c), int(pos[1] / self._c),
+                    int(pos[2] / self._cz))
+        return (int(pos[0] / self._c), int(pos[1] / self._c))
 
     def query(self, agent, radius):
         c    = self._c
-        cx   = int(agent.position[0] / c)
-        cy   = int(agent.position[1] / c)
+        cz   = self._cz
+        pos  = agent.position
+        cx   = int(pos[0] / c)
+        cy   = int(pos[1] / c)
         span = max(1, int(np.ceil(radius / c)))
         r2   = radius * radius
         out  = []
-        for dx in range(-span, span + 1):
-            for dy in range(-span, span + 1):
-                for o in self._grid.get((cx + dx, cy + dy), []):
-                    if o is not agent:
-                        d2 = float(np.sum((o.position - agent.position) ** 2))
-                        if d2 < r2:
-                            out.append(o)
+
+        if self._3d and len(pos) == 3:
+            cz_val = int(pos[2] / cz)
+            zspan  = max(1, int(np.ceil(radius / cz)))
+            for dx in range(-span, span + 1):
+                for dy in range(-span, span + 1):
+                    for dz in range(-zspan, zspan + 1):
+                        for o in self._grid.get((cx+dx, cy+dy, cz_val+dz), []):
+                            if o is not agent:
+                                d2 = float(np.sum((o.position - pos) ** 2))
+                                if d2 < r2:
+                                    out.append(o)
+        else:
+            for dx in range(-span, span + 1):
+                for dy in range(-span, span + 1):
+                    for o in self._grid.get((cx + dx, cy + dy), []):
+                        if o is not agent:
+                            d2 = float(np.sum((o.position - agent.position) ** 2))
+                            if d2 < r2:
+                                out.append(o)
         return out
 
 
@@ -111,7 +139,7 @@ class Swarm:
         if base_pos is not None:
             self.relay = Agent(base_pos.copy(), role="relay")
             self.drones = [
-                Agent(base_pos + np.random.uniform(-22, 22, 2),
+                Agent(base_pos[:2] + np.random.uniform(-22, 22, 2),
                       role="drone", drone_type=dt)
                 for dt in _spawn_types(config.NUM_DRONES, config.LOADOUT)
             ]
@@ -395,38 +423,69 @@ class Swarm:
         # always hold the perimeter even while the main formation is DENSE).
         # Interceptors → equal-angle ring at BUBBLE_RADIUS.
         # All other drones → hold tight DENSE around relay.
+        # altitude target for 3D mode (Z offset from relay altitude)
+        _tgt_z = (float(config.ALTITUDE_TIERS.get(drone.drone_type or "fast",
+                                                   config.ALTITUDE_TIERS["fast"]))
+                  if config.SIM_3D else None)
+
+        def _ring(angle, radius):
+            """2D/3D ring offset from relay_pos."""
+            if config.SIM_3D:
+                xy = np.array([np.cos(angle), np.sin(angle), 0.0]) * radius
+                pt = relay_pos + xy
+                pt = pt.copy()
+                pt[2] = _tgt_z
+                return pt
+            return relay_pos + np.array([np.cos(angle), np.sin(angle)]) * radius
+
         want_bubble = (mode == "BUBBLE") or (phase == "SATURATION" and is_int)
         if want_bubble:
             if is_int:
                 n     = max(n_interceptors, 1)
                 angle = 2 * np.pi * interceptor_idx / n
-                return relay_pos + np.array([np.cos(angle), np.sin(angle)]) * config.BUBBLE_RADIUS
+                return _ring(angle, config.BUBBLE_RADIUS)
             else:
                 # non-interceptors: DENSE ring around relay
                 angle = 2 * np.pi * drone_idx / max(n_alive, 1)
-                return relay_pos + np.array([np.cos(angle), np.sin(angle)]) * (
-                    config.SEPARATION_RADIUS * 2)
+                return _ring(angle, config.SEPARATION_RADIUS * 2)
 
         # ── COLUMN: staggered double-file behind relay heading ─────────────────
         # Spec: 2-wide, spaced by SEPARATION_RADIUS.
         if mode == "COLUMN":
-            speed = float(np.linalg.norm(relay_vel))
-            fwd   = relay_vel / speed if speed > 0.1 else np.array([0.0, -1.0])
-            perp  = np.array([-fwd[1], fwd[0]])
-            col   = (drone_idx % 2) - 0.5          # left/right file: -0.5 or +0.5
-            row   = drone_idx // 2 + 1             # rows: 1 1 2 2 3 3 …
-            sp    = float(config.SEPARATION_RADIUS)
-            return relay_pos - fwd * (row * sp) + perp * (col * sp)
+            speed  = float(np.linalg.norm(relay_vel))
+            if speed > 0.1:
+                if config.SIM_3D:
+                    fwd_xy  = relay_vel[:2] / np.linalg.norm(relay_vel[:2] + 1e-8)
+                    perp_xy = np.array([-fwd_xy[1], fwd_xy[0]])
+                    fwd     = np.array([fwd_xy[0],  fwd_xy[1],  0.0])
+                    perp    = np.array([perp_xy[0], perp_xy[1], 0.0])
+                else:
+                    fwd  = relay_vel / speed
+                    perp = np.array([-fwd[1], fwd[0]])
+            else:
+                if config.SIM_3D:
+                    fwd  = np.array([0.0, -1.0, 0.0])
+                    perp = np.array([1.0,  0.0, 0.0])
+                else:
+                    fwd  = np.array([0.0, -1.0])
+                    perp = np.array([1.0,  0.0])
+            col = (drone_idx % 2) - 0.5          # left/right file: -0.5 or +0.5
+            row = drone_idx // 2 + 1             # rows: 1 1 2 2 3 3 …
+            sp  = float(config.SEPARATION_RADIUS)
+            pt  = relay_pos - fwd * (row * sp) + perp * (col * sp)
+            if config.SIM_3D:
+                pt = pt.copy()
+                pt[2] = _tgt_z
+            return pt
 
         # ── DENSE: tight cluster around relay ─────────────────────────────────
         if mode == "DENSE":
             angle = 2 * np.pi * drone_idx / max(n_alive, 1)
-            return relay_pos + np.array([np.cos(angle), np.sin(angle)]) * (
-                config.SEPARATION_RADIUS * 2)
+            return _ring(angle, config.SEPARATION_RADIUS * 2)
 
         # ── DISPERSED: multi-ring layout, ~PERCEPTION_RADIUS between rings ─────
         if mode == "DISPERSED":
-            return self._dispersed_target(drone_idx, relay_pos)
+            return self._dispersed_target(drone_idx, relay_pos, _tgt_z)
 
         # ── PURSUIT: each drone heads directly to target zone ─────────────────
         if mode == "PURSUIT":
@@ -435,7 +494,7 @@ class Swarm:
 
         return self._drone_follow_target()
 
-    def _dispersed_target(self, drone_idx, center):
+    def _dispersed_target(self, drone_idx, center, tgt_z=None):
         """Assign drone_idx a slot in expanding rings spaced PERCEPTION_RADIUS apart."""
         per_r = float(config.PERCEPTION_RADIUS)
         ring  = 1
@@ -445,6 +504,13 @@ class Swarm:
             if drone_idx < total + n_in_ring:
                 slot  = drone_idx - total
                 angle = 2 * np.pi * slot / n_in_ring
+                if config.SIM_3D:
+                    xy = np.array([np.cos(angle), np.sin(angle), 0.0]) * (ring * per_r)
+                    pt = center + xy
+                    pt = pt.copy()
+                    if tgt_z is not None:
+                        pt[2] = tgt_z
+                    return pt
                 return center + np.array([np.cos(angle), np.sin(angle)]) * (ring * per_r)
             total += n_in_ring
             ring  += 1
@@ -545,7 +611,14 @@ class Swarm:
             np.linalg.norm(raw_goal - self._path_target) > 50
         )
         if goal_shifted or self._replan_in <= 0:
-            self._relay_path  = self._pf.find_path(self.relay.position, raw_goal)
+            path_2d = self._pf.find_path(self.relay.position[:2], raw_goal[:2])
+            if config.SIM_3D:
+                relay_z = float(config.ALTITUDE_TIERS.get("relay", 120))
+                self._relay_path = [
+                    np.array([p[0], p[1], relay_z], dtype=float) for p in path_2d
+                ]
+            else:
+                self._relay_path = path_2d
             self._path_idx    = 0
             self._path_target = raw_goal.copy()
             self._replan_in   = 90
@@ -670,8 +743,11 @@ class Swarm:
             if not p.alive:
                 continue
             p.position = p.position + p.velocity
-            if (p.position[0] < 0 or p.position[0] > W or
-                    p.position[1] < 0 or p.position[1] > H):
+            oob = (p.position[0] < 0 or p.position[0] > W or
+                   p.position[1] < 0 or p.position[1] > H)
+            if config.SIM_3D and len(p.position) == 3:
+                oob = oob or p.position[2] < 0 or p.position[2] > config.WORLD_DEPTH
+            if oob:
                 p.alive = False
                 continue
 

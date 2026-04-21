@@ -3,11 +3,46 @@ from . import config
 from .physics import normalize, limit, seek, euler_integrate
 
 
+def _orbit_xy(t: float, r: float) -> np.ndarray:
+    """Unit circle orbit in the XY plane, dimensioned for the current sim mode."""
+    if config.SIM_3D:
+        return np.array([np.cos(t), np.sin(t), 0.0]) * r
+    return np.array([np.cos(t), np.sin(t)]) * r
+
+
+def _fwd_fallback() -> np.ndarray:
+    """Default forward direction (north) when relay has no velocity."""
+    if config.SIM_3D:
+        return np.array([0.0, -1.0, 0.0])
+    return np.array([0.0, -1.0])
+
+
+def _default_altitude(drone_type):
+    """Return a random starting Z within the altitude band for this drone type."""
+    dt  = drone_type or "fast"
+    af  = config.DRONE_TYPES.get(dt, {}).get("airframe", "small")
+    if af == "relay":
+        lo, hi = config.ALTITUDE_BAND.get("relay", (100, 140))
+    else:
+        lo, hi = config.ALTITUDE_BAND.get(af, (70, 120))
+    return np.random.uniform(lo, hi)
+
+
 class Agent:
     def __init__(self, position, role="drone", drone_type="fast", side="player"):
-        self.position   = np.array(position, dtype=float)
+        pos = np.array(position, dtype=float)
+        if config.SIM_3D:
+            if len(pos) == 2:
+                af_key = "relay" if role == "relay" else None
+                z = _default_altitude(drone_type if af_key is None else "relay")
+                pos = np.append(pos, z)
+        self.position   = pos
         angle           = np.random.uniform(0, 2 * np.pi)
-        self.velocity   = np.array([np.cos(angle), np.sin(angle)]) * np.random.uniform(0.5, 1.5)
+        speed           = np.random.uniform(0.5, 1.5)
+        if config.SIM_3D:
+            self.velocity = np.array([np.cos(angle) * speed, np.sin(angle) * speed, 0.0])
+        else:
+            self.velocity = np.array([np.cos(angle), np.sin(angle)]) * speed
         self.role       = role
         self.drone_type = drone_type if role == "drone" else None
         self.side       = side          # "player" or "enemy"
@@ -39,7 +74,7 @@ class Agent:
         self._stun_timer      = 0.0         # enemy stun from EMP
 
         # degraded-command / last-known heading (C)
-        self._last_good_heading = np.zeros(2)
+        self._last_good_heading = np.zeros_like(self.position)
         self._last_good_ft      = None       # last formation target
         self._heading_decay     = 0.0        # seconds since signal went below HIGH
 
@@ -183,7 +218,7 @@ class Agent:
             return False
 
         relay_pos  = context.get("relay_pos")
-        relay_vel  = context.get("relay_vel", np.zeros(2))
+        relay_vel  = context.get("relay_vel", np.zeros_like(self.position))
         if relay_pos is None:
             return False
 
@@ -192,7 +227,7 @@ class Agent:
         else:
             tc = context.get("target_center")
             heading = (normalize(np.array(tc, dtype=float) - relay_pos)
-                       if tc is not None else np.array([0.0, -1.0]))
+                       if tc is not None else _fwd_fallback())
         target_pos = relay_pos + heading * config.EMP_LEAD_DIST
 
         if self._emp_stage == "attached":
@@ -230,24 +265,24 @@ class Agent:
         if phase not in ("SUPPRESSION", "SATURATION"):
             return False
         relay_pos = context.get("relay_pos")
-        relay_vel = context.get("relay_vel", np.zeros(2))
+        relay_vel = context.get("relay_vel", np.zeros_like(self.position))
         if relay_pos is None:
             return False
-        heading    = normalize(relay_vel) if np.linalg.norm(relay_vel) > 0.1 else np.array([0, -1.0])
+        heading    = normalize(relay_vel) if np.linalg.norm(relay_vel) > 0.1 else _fwd_fallback()
         orbit_center = relay_pos + heading * (config.EMP_LEAD_DIST * 0.6)
         self._t   += 0.04
         orbit_r    = 60.0
-        tgt = orbit_center + np.array([np.cos(self._t), np.sin(self._t)]) * orbit_r
+        tgt = orbit_center + _orbit_xy(self._t, orbit_r)
         self._move_toward(tgt, environment)
         return True
 
     # RECON ────────────────────────────────────────────────────────────────────
     def _tick_recon(self, context, environment, dt):
         relay_pos = context.get("relay_pos")
-        relay_vel = context.get("relay_vel", np.zeros(2))
+        relay_vel = context.get("relay_vel", np.zeros_like(self.position))
         if relay_pos is None:
             return False
-        heading = normalize(relay_vel) if np.linalg.norm(relay_vel) > 0.1 else np.array([0, -1.0])
+        heading = normalize(relay_vel) if np.linalg.norm(relay_vel) > 0.1 else _fwd_fallback()
         tgt = relay_pos + heading * config.RECON_LEAD_DIST
         self._move_toward(tgt, environment)
 
@@ -291,7 +326,7 @@ class Agent:
             return False
         self._loiter_angle += 0.015 * (config.MAX_SPEED * config.DRONE_TYPES["loiter"]["speed_mult"])
         orbit_r = 80.0
-        tgt = target_center + np.array([np.cos(self._loiter_angle), np.sin(self._loiter_angle)]) * orbit_r
+        tgt = target_center + _orbit_xy(self._loiter_angle, orbit_r)
         self._move_toward(tgt, environment)
         return True
 
@@ -338,7 +373,7 @@ class Agent:
             return False
         # mimic relay movement: follow relay closely with slight offset
         self._t += 0.02
-        offset = np.array([np.cos(self._t) * 30, np.sin(self._t) * 30])
+        offset = _orbit_xy(self._t, 30.0)
         self._move_toward(relay_pos + offset, environment)
         return True
 
@@ -417,7 +452,7 @@ class Agent:
             idx   = context.get("drone_idx", 0)
             n     = max(context.get("n_interceptors", 1), 1)
             angle = 2 * np.pi * idx / n
-            tgt   = relay_pos + np.array([np.cos(angle), np.sin(angle)]) * config.BUBBLE_RADIUS
+            tgt   = relay_pos + _orbit_xy(angle, config.BUBBLE_RADIUS)
             self._move_toward(tgt, environment)
             return True
         return False
@@ -442,7 +477,7 @@ class Agent:
         remaining = (t_zero - now) if t_zero is not None else 0.0
         angle     = self._convergence_angle
         radius    = context.get("target_radius", 120.0)
-        entry     = target_center + np.array([np.cos(angle), np.sin(angle)]) * radius
+        entry     = target_center + _orbit_xy(angle, radius)
 
         if remaining > 0.5:
             # Pre-T-zero: pace speed so every drone arrives at entry point at T-zero.
@@ -477,7 +512,7 @@ class Agent:
             if remaining > 0.5:
                 angle  = self._convergence_angle
                 radius = context.get("target_radius", 120.0)
-                entry  = target_center + np.array([np.cos(angle), np.sin(angle)]) * radius
+                entry  = target_center + _orbit_xy(angle, radius)
                 d = float(np.linalg.norm(entry - self.position))
                 desired_speed = min(d / remaining, config.MAX_SPEED * self.speed_mult)
                 if d > 5:
@@ -503,7 +538,7 @@ class Agent:
             return False  # fall through to boids
 
         relay_pos = context.get("relay_pos")
-        relay_vel = context.get("relay_vel", np.zeros(2))
+        relay_vel = context.get("relay_vel", np.zeros_like(self.position))
         if relay_pos is None:
             return False
 
@@ -512,11 +547,11 @@ class Agent:
         else:
             tc = context.get("target_center")
             heading = (normalize(np.array(tc, dtype=float) - relay_pos)
-                       if tc is not None else np.array([0.0, -1.0]))
+                       if tc is not None else _fwd_fallback())
 
         # Orbit slowly around the anchor point to avoid static clustering
         self._t += 0.018
-        orbit_offset = np.array([np.cos(self._t), np.sin(self._t)]) * 18
+        orbit_offset = _orbit_xy(self._t, 18.0)
         anchor = relay_pos + heading * (config.SIGNAL_RADIUS * 0.8) + orbit_offset
         self._move_toward(anchor, environment)
         return True
@@ -525,7 +560,7 @@ class Agent:
     def _enemy_tick(self, context, environment, dt):
         if self._stun_timer > 0:
             # random wander
-            self.velocity += np.random.uniform(-0.3, 0.3, 2)
+            self.velocity += np.random.uniform(-0.3, 0.3, len(self.velocity))
             self.velocity  = limit(self.velocity, config.MAX_SPEED * self.speed_mult)
             return
 
@@ -581,8 +616,14 @@ class Agent:
         self._t += 0.008
         cx, cy = config.WORLD_SIZE[0] / 2, config.WORLD_SIZE[1] / 2
         r = min(config.WORLD_SIZE) * 0.3
-        target = np.array([cx + r * np.sin(self._t),
-                           cy + r * np.sin(self._t * 2) * 0.5])
+        if config.SIM_3D:
+            relay_z = float(config.ALTITUDE_TIERS.get("relay", 120))
+            target  = np.array([cx + r * np.sin(self._t),
+                                 cy + r * np.sin(self._t * 2) * 0.5,
+                                 relay_z])
+        else:
+            target = np.array([cx + r * np.sin(self._t),
+                               cy + r * np.sin(self._t * 2) * 0.5])
         self.velocity = limit(target - self.position, config.MAX_SPEED)
         if environment:
             rep = environment.repulsion_force(self.position)
@@ -591,7 +632,14 @@ class Agent:
         self.position = euler_integrate(self.position, self.velocity)
 
     def move_relay_toward(self, target, environment=None):
-        desired = normalize(target - self.position) * config.MAX_SPEED
+        # Ensure target and position have compatible shapes
+        tgt = np.array(target, dtype=float)
+        if len(tgt) != len(self.position):
+            if len(tgt) < len(self.position):
+                tgt = np.append(tgt, [self.position[i] for i in range(len(tgt), len(self.position))])
+            else:
+                tgt = tgt[:len(self.position)]
+        desired = normalize(tgt - self.position) * config.MAX_SPEED
         self.velocity = limit(desired, config.MAX_SPEED)
         if environment:
             rep = environment.repulsion_force(self.position)
@@ -605,14 +653,15 @@ class Agent:
         aln   = self._alignment(neighbors)
         coh   = self._cohesion(neighbors)
         rel   = (seek(self.position, relay_pos, self.velocity, config.MAX_SPEED, config.MAX_FORCE)
-                 if relay_pos is not None else np.zeros(2))
-        env_f = environment.repulsion_force(self.position) if environment else np.zeros(2)
+                 if relay_pos is not None else np.zeros_like(self.position))
+        _dim  = len(self.position)
+        env_f = environment.repulsion_force(self.position) if environment else np.zeros(_dim)
 
         w = config.WEIGHTS
         s = self.signal
         if s > config.SIGNAL_TIER_HIGH:
             w_sep, w_aln, w_coh, w_rel = w["separation"], w["alignment"], w["cohesion"], w["relay"]
-            wander = np.zeros(2)
+            wander = np.zeros(_dim)
         elif s > config.SIGNAL_TIER_LOW:
             # Partial signal: halved aln/coh, no relay force.
             # Steer on last-known heading with timed decay (replaces velocity dampener).
@@ -621,10 +670,10 @@ class Agent:
             if np.linalg.norm(self._last_good_heading) > 0.1 and decay_frac > 0.01:
                 wander = self._last_good_heading * decay_frac * config.MAX_FORCE * 0.8
             else:
-                wander = np.zeros(2)
+                wander = np.zeros(_dim)
         else:
             w_sep, w_aln, w_coh, w_rel = w["separation"], w["alignment"], w["cohesion"], 0.0
-            wander = np.random.uniform(-1, 1, 2) * 0.08
+            wander = np.random.uniform(-1, 1, _dim) * 0.08
 
         force = sep*w_sep + aln*w_aln + coh*w_coh + rel*w_rel + env_f + wander
         self.last_forces = {
@@ -638,14 +687,14 @@ class Agent:
         self.velocity  = limit(self.velocity, max_speed)
 
     def _separation(self, neighbors):
-        steer = np.zeros(2)
+        steer = np.zeros_like(self.position)
         count = 0
         for nb in neighbors:
             diff = self.position - nb.position
             d    = np.linalg.norm(diff)
             if d < config.SEPARATION_RADIUS:
                 if d < 0.5:
-                    diff = np.random.uniform(-1, 1, 2)
+                    diff = np.random.uniform(-1, 1, len(self.position))
                     d    = max(np.linalg.norm(diff), 1e-4)
                 steer += normalize(diff) / d
                 count += 1
@@ -655,13 +704,13 @@ class Agent:
 
     def _alignment(self, neighbors):
         if not neighbors:
-            return np.zeros(2)
+            return np.zeros_like(self.position)
         avg = np.mean([nb.velocity for nb in neighbors], axis=0)
         return limit(limit(avg, config.MAX_SPEED) - self.velocity, config.MAX_FORCE)
 
     def _cohesion(self, neighbors):
         if not neighbors:
-            return np.zeros(2)
+            return np.zeros_like(self.position)
         avg = np.mean([nb.position for nb in neighbors], axis=0)
         return seek(self.position, avg, self.velocity, config.MAX_SPEED, config.MAX_FORCE)
 
@@ -670,9 +719,9 @@ class Agent:
         self.active_reflexes = set()
         W, H = config.WORLD_SIZE
 
-        # GEOFENCE
+        # GEOFENCE — XY boundaries
         margin = config.GEOFENCE_MARGIN
-        f_geo  = np.zeros(2)
+        f_geo  = np.zeros_like(self.position)
         if self.position[0] < margin:
             f_geo[0] += config.GEOFENCE_FORCE * (margin - self.position[0]) / margin
         if self.position[0] > W - margin:
@@ -681,6 +730,18 @@ class Agent:
             f_geo[1] += config.GEOFENCE_FORCE * (margin - self.position[1]) / margin
         if self.position[1] > H - margin:
             f_geo[1] -= config.GEOFENCE_FORCE * (self.position[1] - (H - margin)) / margin
+        # Z altitude geofence (active only in SIM_3D mode)
+        if config.SIM_3D and len(self.position) == 3:
+            z_floor = 10.0
+            z_ceil  = config.WORLD_DEPTH
+            if self.position[2] < z_floor:
+                f_geo[2] += config.GEOFENCE_FORCE * (z_floor - self.position[2]) / z_floor
+            if self.position[2] > z_ceil - margin:
+                f_geo[2] -= config.GEOFENCE_FORCE * (self.position[2] - (z_ceil - margin)) / margin
+            # Altitude controller: spring toward cruising altitude tier
+            tgt_z = float(config.ALTITUDE_TIERS.get(self.drone_type or "fast",
+                                                     config.ALTITUDE_TIERS.get("fast", 95)))
+            f_geo[2] += (tgt_z - self.position[2]) * 0.015   # gentle spring
         if np.linalg.norm(f_geo) > 0.001:
             self.velocity += f_geo
             self.active_reflexes.add("GEOFENCE")
@@ -724,9 +785,11 @@ class Agent:
 
         self.velocity = limit(self.velocity, config.MAX_SPEED * self.speed_mult)
         self.position = euler_integrate(self.position, self.velocity)
-        # clamp to world
+        # clamp to world bounds
         self.position[0] = np.clip(self.position[0], 0, W)
         self.position[1] = np.clip(self.position[1], 0, H)
+        if config.SIM_3D and len(self.position) == 3:
+            self.position[2] = np.clip(self.position[2], 0.0, config.WORLD_DEPTH)
 
 
 # ── L1 reflex engagement gates (cannot be overridden by any higher layer) ─────
